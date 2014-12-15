@@ -1,10 +1,7 @@
-#include <SD.h> // Modified SD library, with MEGA_SOFT_SPI defined as 1 in Sd2Card.h
-#include <MidiFileStream.h> // My own Midi File reading library
-
 /*
  * Midi-file-playing Glockenspiel.
- * Version 1.0.0
- * Date: December 10, 2014
+ * Version 1.0.1
+ * December 14, 2014
  * 
  * Copyright (c) 2014 Bradford Needham
  * (@bneedhamia, https://www.needhamia.com)
@@ -31,16 +28,20 @@
  */
 
 /*
- * This sketch assumes an Arduino Mega 2560
- * with a Sparkfun MicroSD shield
- * (https://www.sparkfun.com/products/12761)
+ * This sketch requires an Arduino Mega 2560 Rev 3,
+ * a Sparkfun TransmogriShield on it
+ * (https://www.sparkfun.com/products/11469)
+ * a Sparkfun Wifi CC3000 Shield on top of that
+ * (https://www.sparkfun.com/products/12071)
  * and 19 solenoids
  * (https://www.sparkfun.com/products/11015 part ZHO-0420S-05A4.5)
- * which strike chimes made of 1/2" metal electrical conduit
+ * which strike chimes made of 1/2" metal electrical conduit.
+ * It further requires a formatted Micro SD card
+ * plugged into the Wifi Shield.
  *
  * See glockenspiel.fzz for the circuit diagram.
  * Solenoid power is connected to the Arduino Vin.
- * It assumes the Arduino is powered from a 9V wall supply.
+ * It requires the Arduino be powered by a 9V wall supply.
  *
  * For development, connect both a 9V supply
  * and the USB cable.
@@ -49,25 +50,40 @@
  * To operate: XXX add instructions.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
- * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V was too weak),
- * anything over a 6% duty cycle will burn out the solenoid.
+ * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
+ * anything over an average 6% duty cycle will burn out the solenoid.
  */
+
+#include <SD.h>
+#include <SPI.h>
+#include <SFE_CC3000.h>
+#include <SFE_CC3000_Client.h>
+#include <MidiFileStream.h> // https://github.com/bneedhamia/midifilestream
 
 /*
  * Pins:
  *
- * pinLED = the LED to blink on error.
- * pinSelectSD = the MicroSD shield chip select pin.
+ * Wifi Shield Pins:
+ * pinWifiInt = interrupt pin for Wifi Shield
+ * pinWifiEnable = enable pin for with Wifi Shield
+ * pinSelectWifi = the CC3000 chip select pin.
+ * pinSelectSD = the SD chip select pin.
+ *
+ * pinLed = the LED to blink on error.
  * pinNoteOffset[] = the pin number of a solenoid that plays a chime.
  *  Indexed by the offset from MIN_NOTE_NUM. That is:
  *    pin = pinNoteOffset[midiNoteNum - MIN_NOTE_NUM];
  * MIN_NOTE_NUM = the MIDI note number of the lowest-pitched chime.
- * NUM_NOTE_PINS = the number of MIDI notes we support.
+ * NUM_NOTE_PINS = the number of consecutive MIDI notes we support.
  *    That is, the number of chimes we have.
  */
- 
+
+const int pinWifiInt = 2;
+const int pinWifiEnable = 7;
+const int pinSelectWifi = 10;
+const int pinSelectSD = 8;
+
 const int pinLed = 13;
-const int pinSelectSD = 8;  // Sparkfun SD card chip select
 
 const int MIN_NOTE_NUM = 72; // Midi note 72 corresponds to C5
 const int pinNoteOffset[] = {
@@ -106,16 +122,7 @@ char state;
 
 // A dummy playlist.
 const char *names[] = {
-//    "ANTHEM.MID",
-//    "ANTHEM2.MID",
-//    "CSSAMP.MID",
-//    "FLOUR.MID",
-//    "FOREST.MID",
-//    "FULLJAM.MID",
     "SOMERSET.MID",
-//    "JOY.MID",
-//    "STOP1.MID",
-//    "THETOWN.MID",
     0
 };
 int nameIdx = 0;
@@ -189,7 +196,7 @@ int getNextFilename();
 void setup() {
   int i;
  
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println("Reset.");
 
   Ram_TableDisplay(); //Debug
@@ -202,18 +209,18 @@ void setup() {
   
   state = STATE_ERROR;
   
-  Serial.println("calling SD.begin()");
   if (!SD.begin(pinSelectSD)) {
     Serial.println("SD.begin() failed. Check card insertion.");
     return;
   }
+  Serial.println("SD successfully opened.");
   
   state = STATE_END_FILE;
 
 }
 
 void loop() {
-  char chunkType;
+  chunk_t chunkType;
   event_t eventType;
   int bLeft;
   long uSecs;
