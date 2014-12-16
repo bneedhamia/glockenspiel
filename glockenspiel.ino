@@ -6,25 +6,8 @@
  * Copyright (c) 2014 Bradford Needham
  * (@bneedhamia, https://www.needhamia.com)
  *
- * Licensed under The MIT License (MIT):
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Licensed under The MIT License (MIT),
+ * a copy of which should have been supplied with this file.
  */
 
 /*
@@ -58,6 +41,7 @@
 #include <SPI.h>
 #include <SFE_CC3000.h>
 #include <SFE_CC3000_Client.h>
+#include <SDConfigFile.h> // https://github.com/bneedhamia/sdconfigfile
 #include <MidiFileStream.h> // https://github.com/bneedhamia/midifilestream
 
 /*
@@ -98,6 +82,9 @@ const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
  */
 const int MS_PER_STRIKE = 3;
 
+// maximum line length in our config file
+const uint8_t MAX_CONFIG_LINE_LENGTH = 128;
+
 /*
  * Values for state.
  * STATE_ERROR = a fatal error has occurred. The player needs to be reset.
@@ -119,235 +106,6 @@ const char STATE_WAITING = (char) 5;
  * See the example SD/glock.cfg for its format.
  */
 const char *CONFIG_FILE = "glocken.cfg";
-
-//XXX once this class works, move it to a library.
-/*--------------------------- SDConfigFile class ----------*/
-#ifndef SDConfigFile_h
-#define SDConfigFile_h
-
-#include <SD.h>
-
-/*
- * SD card configuration file reading library
- *
- * Copyright (c) 2014 Bradford Needham
- * (@bneedhamia, https://www.needhamia.com )
- * Licensed under LGPL version 2.1
- * a version of which should have been supplied with this file.
- *
- * The library supports one #define:
- *   #define SDCONFIGFILE_DEBUG 1 // to print file error messages.
- */
-
-const int CONFIG_LINE_BUFER_SIZE = (127 + 1);
-
-class SDConfigFile {
-  private:
-    File _file;                          // the open configuration file
-    boolean _atEnd;                      // If true, there is no more of the file to read.
-    char _line[CONFIG_LINE_BUFER_SIZE];  // the current line of the file (see _lineLength)
-    uint8_t _lineLength;                 // length (bytes) of the current line so far.
-    uint8_t _valueIdx;                   // position in _line[] where the value starts (or -1 if none)
-                                         // (the name part is at &_line[0])
-  
-  public:
-    boolean begin(const char *configFileName);
-    void end();
-    boolean readNextSetting();
-    char *getName();
-    char *getValue();
-};
-#endif
-/*--- .cpp ----*/
-/*
- * SD card configuration file reading library
- *
- * Copyright (c) 2014 Bradford Needham
- * (@bneedhamia, https://www.needhamia.com )
- * Licensed under LGPL version 2.1
- * a version of which should have been supplied with this file.
- */
- 
-//XXX #include <SDConfigFile.h>
-
-/*
- * Opens the given file on the SD card.
- * Returns true if successful, false if not.
- *
- * configFileName = the name of the configuration file on the SD card.
- *
- * NOTE: SD.begin() must be called before calling our begin().
- */
-boolean SDConfigFile::begin(const char *configFileName) { 
-  _lineLength = 0;
-  _valueIdx = -1;
-  _atEnd = true;
-
-  /*
-   * To avoid stale references to configFileName
-   * we don't save it. To minimize memory use, we don't copy it.
-   */
-   
-  _file = SD.open(configFileName, FILE_READ);
-  if (!_file) {
-#ifdef SDCONFIGFILE_DEBUG
-    Serial.print("Could not open SD file: ");
-    Serial.println(configFileName);
-#endif
-    _atEnd = true;
-    return false;
-  }
-  
-  // Initialize our reader
-  _atEnd = false;
-  
-  return true;
-}
-
-/*
- * Cleans up our SDCOnfigFile object.
- */
-void SDConfigFile::end() {
-  if (_file) {
-    _file.close();
-  }
-  _atEnd = true;
-}
-
-/*
- * Reads the next name=value setting from the file.
- * Returns true if the setting was successfully read,
- * false if an error occurred or end-of-file occurred.
- */
-boolean SDConfigFile::readNextSetting() {
-  int bint;
-  
-  if (_atEnd) {
-    return false;  // already at end of file (or error).
-  }
-  
-  _lineLength = 0;
-  _valueIdx = -1;
-  
-  /*
-   * Assume beginning of line.
-   * Skip blank and comment lines
-   * until we read the first character of the key
-   * or get to the end of file.
-   */
-  while (true) {
-    bint = _file.read();
-    if (bint < 0) {
-      _atEnd = true;
-      return false;
-    }
-    
-    if ((char) bint == '#') {
-      // Comment line.  Read until end of line or end of file.
-      while (true) {
-        bint = _file.read();
-        if (bint < 0) {
-          _atEnd = true;
-          return false;
-        }
-        if ((char) bint == '\r' || (char) bint == '\n') {
-          break;
-        }
-      }
-      continue; // look for the next line.
-    }
-    
-    // Ignore line ends and blank text
-    if ((char) bint == '\r' || (char) bint == '\n'
-        || (char) bint == ' ' || (char) bint == '\t') {
-      continue;
-    }
-        
-    break; // bint contains the first character of the name
-  }
-  
-  // Copy this first character to the end of the line.
-  while (bint >= 0 && (char) bint != '\r' && (char) bint != '\n') {
-    if (_lineLength >= CONFIG_LINE_BUFER_SIZE - 1) { // -1 for a terminating null.
-      _line[_lineLength] = '\0';
-#ifdef SDCONFIGFILE_DEBUG
-      Serial.print("Line too long: ");
-      Serial.println(_line);
-#endif
-      _atEnd = true;
-      return false;
-    }
-    
-    if ((char) bint == '=') {
-      // End of Name; the next character starts the value.
-      _line[_lineLength++] = '\0';
-      _valueIdx = _lineLength;
-      
-    } else {
-      _line[_lineLength++] = (char) bint;
-    }
-    
-    bint = _file.read();
-  }
-  
-  if (bint < 0) {
-    _atEnd = true;
-    // don't exit. This is a normal situation: the last line doesn't end in newline.
-  }
-  _line[_lineLength] = '\0';
-  
-  /*
-   * Sanity checks of the line:
-   *   No =
-   *   No name
-   * It's OK to have a null value (nothing after the '=')
-   */
-  if (_valueIdx < 0) {
-#ifdef SDCONFIGFILE_DEBUG
-    Serial.print("Missing '=' in line: ");
-    Serial.println(_line);
-#endif
-    _atEnd = true;
-    return false;
-  }
-  if (_valueIdx == 1) {
-#ifdef SDCONFIGFILE_DEBUG
-    Serial.print("Missing Name in line: =");
-    Serial.println(_line[_valueIdx]);
-#endif
-    _atEnd = true;
-    return false;
-  }
-  
-  // Name starts at _line[0]; Value starts at _line[_valueIdx].
-  return true;
-
-}
-
-/*
- * Returns the name part of the most-recently-read setting.
- * WARNING: calling this when an error has occurred can crash your sketch.
- */
-char *SDConfigFile::getName() {
-  if (_lineLength <= 0 || _valueIdx <= 1) {
-    return "ERROR";
-  }
-  return &_line[0];
-}
-
-/*
- * Returns the value part of the most-recently-read setting.
- * WARNING: calling this when an error has occurred can crash your sketch.
- */
-char *SDConfigFile::getValue() {
-  if (_lineLength <= 0 || _valueIdx <= 1) {
-    return "ERROR";
-  }
-  return &_line[_valueIdx];
-}
-
-
-/*----------------------------end SDConfigFile class ------*/
 
 /*
  * State of our file-playing machine.
@@ -776,7 +534,7 @@ boolean readConfiguration() {
   wifiSsid = 0;
   wifiPassword = 0;
   
-  if (!cfg.begin(CONFIG_FILE)) {
+  if (!cfg.begin(CONFIG_FILE, MAX_CONFIG_LINE_LENGTH)) {
     Serial.print("Failed to open configuration file: ");
     Serial.println(CONFIG_FILE);
     return false;
@@ -784,17 +542,14 @@ boolean readConfiguration() {
   
   while (cfg.readNextSetting()) {
     if (strcmp("ssid", cfg.getName()) == 0) {
-      wifiSsid = (char *) malloc(strlen(cfg.getValue()) + 1);
-      strcpy(wifiSsid, cfg.getValue());
+      wifiSsid = cfg.copyValue();
       
     } else if (strcmp("password", cfg.getName()) == 0) {
-      wifiPassword = (char *) malloc(strlen(cfg.getValue()) + 1);
-      strcpy(wifiPassword, cfg.getValue());
-      
+      wifiPassword = cfg.copyValue();
+
     } else if (strcmp("playUrl", cfg.getName()) == 0) {
-      playListUrl = (char *) malloc(strlen(cfg.getValue()) + 1);
-      strcpy(playListUrl, cfg.getValue());
-      
+      playListUrl = cfg.copyValue();
+
     } else {
       // Skip unrecognized names.
       Serial.print("Unknown name in config: ");
