@@ -1,7 +1,7 @@
 /*
  * Midi-file-playing Glockenspiel.
- * Version 1.0.1
- * December 14, 2014
+ * Version 1.0.2
+ * December 16, 2014
  * 
  * Copyright (c) 2014 Bradford Needham
  * (@bneedhamia, https://www.needhamia.com)
@@ -82,11 +82,41 @@ const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
  */
 const int MS_PER_STRIKE = 3;
 
-// maximum line length in our config file
-const uint8_t MAX_CONFIG_LINE_LENGTH = 128;
+/*
+ * maximum line length in any file we deal with.
+ * A line longer than this will cause the file reading to fail.
+ * The larger this number is, the more memory is consumed.
+ */
+const uint8_t MAX_LINE_LENGTH = 128;
 
 /*
- * Values for state.
+ * The name of our configuration file on the SD card.
+ * See the example SD/glocken.cfg for its format.
+ */
+const char *CONFIG_FILE = "glocken.cfg";
+
+/*
+ * The name of the playlist we'll create from
+ * the original, net playlist.
+ * This tmp playlist will refer only to SD files (not urls).
+ * We use this instead of an in-memory playlist to save memory.
+ */
+const char *SD_TMP_PLAYLIST = "playlist.tmp";
+
+/*
+ * The maximum time (microseconds) we're willing to wait
+ * using the delayMicroseconds() call.
+ * Note: the maximum parameter value
+ * for delayMicroseconds() is 16383.
+ *
+ * For delays greater than MAX_MICROS_TO_DELAY
+ * we simply return from loop() and wait for another
+ * call to loop() to occur.
+ */
+const long MAX_MICROS_TO_DELAY = 11 * 1000L;
+
+/*
+ * Values for our player state.
  * STATE_ERROR = a fatal error has occurred. The player needs to be reset.
  * STATE_STOPPED = playback is stopped. The player is idle.
  * STATE_END_FILE = previous file has ended. Need to choose a new file to play.
@@ -101,30 +131,26 @@ const char STATE_END_TRACK = (char) 3;
 const char STATE_EVENTS = (char) 4;
 const char STATE_WAITING = (char) 5;
 
-/*
- * The name of our configuration file on the SD card.
- * See the example SD/glock.cfg for its format.
- */
-const char *CONFIG_FILE = "glocken.cfg";
+boolean readConfiguration();
+boolean transformSDPlaylist();
+boolean getNextFilename();
+char *cacheFile(const char *url);
 
-/*
- * State of our file-playing machine.
- * See STATE_*.
- */
-char state;
+char *playlistUrl;       // (malloc()ed) url of the playlist (could be file://)
+char *wifiSsid;          // (malloc()ed) SSID of the network to connect to, or null if no net.
+char *wifiPassword;      // (malloc()ed) password of the network, or null if no password.
 
-// A dummy playlist.
-const char *names[] = {
-    "SOMERSET.MID",
-    0
-};
-int nameIdx = 0;
+char *playlistSDName;    // (malloc()ed) local SD card name of the playlist file.
+uint8_t numPlaylistTitles; // number of titles in the temporary playlist.
+uint8_t *playOrder;      // (malloc()ed) array of track numbers, size numPlaylistTitles.
+                         //   (line numbers in the tmp playlist) to play,
+                         //   in order of play.  E.g., if not shuffled, [0] = 0, [1] = 1, etc.
+uint8_t nowPlayingIdx;   // if not 255, index into playOrder[] of the title we're currently playing
+char *playingFname;      // SD filename of the file being played.
+MidiFileStream midiFile; // The current Midi file being played.
+File playingFile;               // the underlying SD File.
 
-const int MAX_FNAME_BYTES = 12 + 1;          // 12 = 8 + '.' + 3, +1 for null termination
-char fName[MAX_FNAME_BYTES] = { (char) 0 };  // current file being played.
-
-MidiFileStream midiFile;  // The current Midi file being read.
-File file;          // the underlying SD File.
+char state;              // State of our file-playing machine. See STATE_*.
 
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
@@ -142,7 +168,7 @@ unsigned long maxMicrosLate = 0;
  * so we must be careful in calculating differences from this time:
  *   unsigned long microsSinceStart = micros() - startMicros;
  * Note: because our time since start will also overflow at about 70 minutes,
- * we can't play a piece that plays longer than that time.
+ * we can't play a piece that plays longer than about 70 minutes.
  * 
  */
 unsigned long startMicros;
@@ -152,18 +178,6 @@ unsigned long startMicros;
  * and the most-recently-queued event.
  */
 unsigned long microsSinceStart;
-
-/*
- * The maximum time (microseconds) we're willing to wait
- * using the delayMicroseconds() call.
- * Note: the maximum parameter value
- * for delayMicroseconds() is 16383.
- *
- * For delays greater than MAX_MICROS_TO_DELAY
- * we simply return from loop() and wait for another
- * call to loop() to occur.
- */
-long MAX_MICROS_TO_DELAY = 11 * 1000L;
 
 /*
  * The queue of notes to play simultaneously.
@@ -184,18 +198,6 @@ int numQueued;
  */
 char isPushedBack;
 
-boolean readConfiguration();
-boolean readSDPlaylist();
-boolean getNextFilename();
-char *cacheFile(const char *url);
-
-
-char *playListUrl;       // (malloc()ed) url of the playlist (could be file://)
-char *wifiSsid;          // (malloc()ed) SSID of the network to connect to, or null if no net.
-char *wifiPassword;      // (malloc()ed) password of the network, or null if no password.
-
-char *playListSDName;    // (malloc()ed) local SD card name of the playlist file.
-
 void setup() {
   int i;
  
@@ -211,32 +213,41 @@ void setup() {
   }
   
   state = STATE_ERROR;
+  playlistUrl = 0;
+  wifiSsid = 0;
+  wifiPassword = 0;
+  playlistSDName = 0;
   
   if (!SD.begin(pinSelectSD)) {
     Serial.println("SD.begin() failed. Check card insertion.");
     return;
   }
-  Serial.println("SD successfully opened.");
   
   //XXX goes in the to be written stop -> play state transition.
   
   readConfiguration();
-  Serial.print("Playlist Url: ");
-  Serial.println(playListUrl);
+  Serial.print("Playlist: ");
+  Serial.println(playlistUrl);
   
-  playListSDName = cacheFile(playListUrl);
-  if (!playListSDName) {
+  if (playlistSDName != 0) {
+    free(playlistSDName);
+  }
+  playlistSDName = cacheFile(playlistUrl);
+  if (!playlistSDName) {
     Serial.print("Cacheing ");
-    Serial.print(playListUrl);
+    Serial.print(playlistUrl);
     Serial.print(" failed. Press stop and start");
     state = STATE_ERROR;
     return;
   }
   
-  if (!readSDPlaylist()) {
+  if (!transformSDPlaylist()) {
     Serial.print("Failed to read playlist: ");
-    Serial.println(playListSDName);
+    Serial.println(playlistSDName);
   }
+  
+  setPlayOrder(); //XXX do this whenever the playlist runs out - that is, we always loop.
+  nowPlayingIdx = 255;
   
   state = STATE_END_FILE;
 
@@ -280,18 +291,18 @@ void loop() {
       
       state = STATE_STOPPED;  // no next file to play.
     } else {       
-      file = SD.open(fName, FILE_READ);
-      if (!file) {
+      playingFile = SD.open(playingFname, FILE_READ);
+      if (!playingFile) {
         Serial.print("failed to open file ");
-        Serial.println(fName);
+        Serial.println(playingFname);
         
         state = STATE_END_FILE; // skip to the next file
       } else {
-        if (!midiFile.begin(file)) {
+        if (!midiFile.begin(playingFile)) {
           Serial.print("failed to open midi file: ");
-          Serial.println(fName);
+          Serial.println(playingFname);
           midiFile.end();
-          file.close();
+          playingFile.close();
                    
           state = STATE_END_FILE;  // skip to the next file.
         } else {
@@ -319,7 +330,7 @@ void loop() {
       
       // Skip to the next file.
       midiFile.end();
-      file.close();
+      playingFile.close();
       
       state = STATE_END_FILE;
       break;
@@ -367,7 +378,7 @@ void loop() {
       Serial.println("Error reading event.");
       // Skip to the next file.
       midiFile.end();
-      file.close();
+      playingFile.close();
       
       state = STATE_END_FILE;
       break;
@@ -402,7 +413,7 @@ void loop() {
     if (microsSinceStart + uSecs < microsSinceStart) {
       Serial.println("File too long: time has overflowed.");
       midiFile.end();
-      file.close();
+      playingFile.close();
       
       state = STATE_END_FILE;
       break;
@@ -530,11 +541,11 @@ void loop() {
 boolean readConfiguration() {
   SDConfigFile cfg;
 
-  playListUrl = 0;
+  playlistUrl = 0;
   wifiSsid = 0;
   wifiPassword = 0;
   
-  if (!cfg.begin(CONFIG_FILE, MAX_CONFIG_LINE_LENGTH)) {
+  if (!cfg.begin(CONFIG_FILE, MAX_LINE_LENGTH)) {
     Serial.print("Failed to open configuration file: ");
     Serial.println(CONFIG_FILE);
     return false;
@@ -542,13 +553,22 @@ boolean readConfiguration() {
   
   while (cfg.readNextSetting()) {
     if (strcmp("ssid", cfg.getName()) == 0) {
+      if (wifiSsid != 0) {
+        free(wifiSsid);
+      }
       wifiSsid = cfg.copyValue();
       
     } else if (strcmp("password", cfg.getName()) == 0) {
+      if (wifiPassword != 0) {
+        free(wifiPassword);
+      }
       wifiPassword = cfg.copyValue();
 
     } else if (strcmp("playUrl", cfg.getName()) == 0) {
-      playListUrl = cfg.copyValue();
+      if (playlistUrl != 0) {
+        free(playlistUrl);
+      }
+      playlistUrl = cfg.copyValue();
 
     } else {
       // Skip unrecognized names.
@@ -562,80 +582,247 @@ boolean readConfiguration() {
 
 /*
  * Reads the local SD card playlist,
- * cacheing each of the referenced Midi files.
+ * cacheing each of the referenced Midi files,
+ * creating a temporary playlist that refers only
+ * to SD files (not urls), one per line.
+ * Also counts the number of items in the playlist.
  * Returns true if successful, false if not.
  */
-boolean readSDPlaylist() {
-  File file;
+boolean transformSDPlaylist() {
+  File fileIn;          // the playlist being read
+  File fileOut;         // the playlist being written, which refers only to SD card files.
+  char line[MAX_LINE_LENGTH + 1];
+  char *cachedName;
   
-  file = SD.open(playListSDName);
-  if (!file) {
+  
+  fileIn = SD.open(playlistSDName, FILE_READ);
+  if (!fileIn) {
     Serial.print("Failed to open SD playlist: ");
-    Serial.println(playListSDName);
+    Serial.println(playlistSDName);
     
     return false;
   }
-  //XXX more to come.
-  Serial.print("Successfully read SD playlist: ");
-  Serial.println(playListSDName);
   
-  file.close();
+  numPlaylistTitles = 0;
+  
+  SD.remove((char *) SD_TMP_PLAYLIST);
+  fileOut = SD.open(SD_TMP_PLAYLIST, FILE_WRITE);
+  if (!fileOut) {
+    Serial.print("Create failed: ");
+    Serial.println(SD_TMP_PLAYLIST);
+    
+    fileIn.close();
+    return false;
+  }
+  
+  cachedName = 0;
+  while (readNextLine(&fileIn, line, MAX_LINE_LENGTH + 1)) {
+    if (line[0] == '\0' || line[0] == '#') {
+      continue;  // skip blank and comment lines.
+    }
+
+    if (cachedName != 0) {
+      free(cachedName);
+      cachedName = 0;
+    }
+    cachedName = cacheFile(line);
+    if (cachedName == 0) {
+      fileIn.close();
+      fileOut.close();
+      return false;
+    }
+    
+    ++numPlaylistTitles;
+    if (fileOut.println(cachedName) < strlen(cachedName)) {
+      // write error.
+      Serial.println("write error");
+      fileIn.close();
+      fileOut.close();
+      return false;
+    }
+
+  }
+  if (cachedName != 0) {
+    free(cachedName);
+    cachedName = 0;
+  }
+  
+  // Allocate the playOrder[] array
+  if (playOrder != 0) {
+    free(playOrder);
+  }
+  playOrder = (uint8_t *) malloc(numPlaylistTitles * sizeof(uint8_t));
+  if (playOrder == 0) {
+    Serial.println("mem");
+    fileIn.close();
+    fileOut.close();
+    return false;
+  }
+    
+  fileIn.close();
+  fileOut.close();
+}
+
+/*
+ * Fills in playOrder[],
+ * based on the 
+ */
+void setPlayOrder() {
+  int i;
+
+  // We currently support only in-order play (no shuffle yet).
+  
+  for (i = 0; i < numPlaylistTitles; ++i) {
+    playOrder[i] = i;
+  }
+}
+
+/*
+ * Reads the next line of the given file into the given buffer.
+ * pFile = points to the File to read from.
+ * buffer = points to the array to read the line into.
+ * bufferLength = the size (bytes) of buffer[], including the terminating null.
+ *  Note: the maximum line length is bufferLength - 1.
+ * Returns true if the line was successfully copied into buffer[],
+ *   false if end of file or some error occurred.
+ */
+boolean readNextLine(File *pFile, char *buffer, uint8_t bufferLength) {
+  uint8_t lineLength;
+  int bint;
+  
+  lineLength = 0;
+  
+  bint = pFile->read();
+  if (bint < 0) {
+    return false;
+  }
+  while (bint >= 0 && (char) bint != '\n' && (char) bint != '\r') {
+    if (lineLength >= bufferLength - 1) {
+      // Line too long.
+      return false;
+    }
+    buffer[lineLength++] = (char) bint;
+    
+    bint = pFile->read();
+  }
+  // Note: a line can end with End Of File rather than a newline.
+  buffer[lineLength] = '\0';
+
+  return true;
 }
 
 /*
  * Copies the file at the given URL to the SD card.
- * Returns the name of the resultant SD card file.
+ * Returns a malloc()ed name of the resultant SD card file.
  * NOTE: if url starts with file:// the file is assumed
  * to already be on the SD card.
  */
- char *cacheFile(const char *url) {
-   char *result = 0;           // value to return
+char *cacheFile(const char *url) {
+  char *result = 0;           // value to return
  
-   char *filePrefixLC = "file://";
-   char *filePrefixUC = "FILE://";
-   int prefixLen;
+  char *filePrefixLC = "file://";
+  char *filePrefixUC = "FILE://";
+  char *httpPrefixLC = "http://";
+  char *httpPrefixUC = "HTTP://";
+  uint8_t prefixLen;
+  int len;
   
-   prefixLen = strlen(filePrefixLC);
+  // If it starts with file://, it's a local file
+  prefixLen = strlen(filePrefixLC);
+  if (strncmp(filePrefixLC, url, prefixLen) == 0 || strncmp(filePrefixUC, url, prefixLen) == 0) {
+    // It's a file. Return the local name.
+    len = strlen(url) - prefixLen;
+    result = (char *) malloc(len + 1);
+    if (result == 0) {
+      // out of memory
+      return 0;
+    }
+    strcpy(result, &url[prefixLen]);
      
-   if (strncmp(filePrefixLC, url, prefixLen) == 0 || strncmp(filePrefixUC, url, prefixLen) == 0) {
-     // It's a file. Return the local name.
-     int len = strlen(url) - prefixLen;
-     result = (char *) malloc(len + 1);
-     strcpy(result, &url[prefixLen]);
-     
-     return result;
-   }
+    return result;
+  }
    
-   Serial.print("unsupported scheme in url: ");
-   Serial.println(url);
-   return 0;
- }
+  // If it starts with http://, copy the url contents to the SD card.
+  prefixLen = strlen(httpPrefixLC);
+  if (strncmp(httpPrefixLC, url, prefixLen) == 0 || strncmp(httpPrefixUC, url, prefixLen) == 0) {
+    Serial.print("http not yet supported: ");
+    Serial.println(url);
+    return 0;
+  }
+   
+  // If it's none of the above, assume it's a bare local filename (not a URL).
+  len = strlen(url);
+  result = (char *) malloc(len + 1);
+  if (result == 0) {
+    // out of memory
+    return 0;
+  }
+  strcpy(result, url);
+  
+  return result;
+}
 
 /*
  * Choose and open the next file we're to play.
  * Returns 1 if successful; 0 if error or if there is nothing more to play.
  */
-boolean getNextFilename() {  
-
-  if (names[nameIdx] == 0) {
-    Serial.println("End of Playlist");
+boolean getNextFilename() {    
+  uint8_t chosenLineNum;    // line number in the tmp playlist containing the file to play.
+  File file;
+  uint8_t curLineNum;
+  char line[MAX_LINE_LENGTH + 1];
+  
+  
+  if (nowPlayingIdx == 255) {
+    nowPlayingIdx = 0;
+  } else {
+    ++nowPlayingIdx;
+    
+    if (nowPlayingIdx >= numPlaylistTitles) {
+      // loop, reshuffle if necessary.
+      setPlayOrder();
+      nowPlayingIdx = 0;
+    }
+  }
+  
+  chosenLineNum = playOrder[nowPlayingIdx];
+  
+  file = SD.open(SD_TMP_PLAYLIST, FILE_READ);
+  if (!file) {
+    Serial.println("failed to open tmp playlist");
     return false;
   }
   
-  // Copy the filename to play
-  if (strlen(names[nameIdx]) > MAX_FNAME_BYTES - 1) {
-    Serial.print("names[");
-    Serial.print(nameIdx);
-    Serial.print("] too long: ");
-    Serial.println(strlen(names[nameIdx]));
+  curLineNum = 0;
+  while (readNextLine(&file, line, MAX_LINE_LENGTH + 1)) {
+    if (curLineNum == chosenLineNum) {
+      break;
+    }
+    ++curLineNum;
+  }
+  
+  file.close();
+  
+  if (curLineNum != chosenLineNum) {
+    Serial.print("couldn't read line ");
+    Serial.print(chosenLineNum);
+    Serial.println(" from tmp playlist");
     return false;
   }
-  strcpy(fName, names[nameIdx]);
+  
+  if (playingFname != 0) {
+    free(playingFname);
+  }
+  playingFname = (char *) malloc(strlen(line) + 1);
+  if (playingFname == 0) {
+    Serial.println("mem");
+    return false;
+  }
+  strcpy(playingFname, line);
+  
   Serial.print("Playing ");
-  Serial.println(fName);
-  
-  // Prepare to get the next filename.
-  ++nameIdx;
+  Serial.println(playingFname);
+
   
   return true;
 }
