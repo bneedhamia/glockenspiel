@@ -1,7 +1,5 @@
 /*
  * Midi-file-playing Glockenspiel.
- * Version 1.0.2
- * December 16, 2014
  * 
  * Copyright (c) 2014 Bradford Needham
  * (@bneedhamia, https://www.needhamia.com)
@@ -403,7 +401,7 @@ void loop() {
     }
     
     /*
-     * Either the current event is simultenous with the previous one,
+     * Either the current event is simultanous with the previous one,
      * or there's nothing queued.
      * In either case,
      * Update the time of this event relative to the start of the track
@@ -464,14 +462,9 @@ void loop() {
         break;
 
     } else if (eventType == ET_END_TRACK) {
-      // If there's anthing in the queue, play it.
-      //XXX not quite right, because a delay to end of track isn't queued.
-      if (numQueued > 0) {
-        isPushedBack = true;
-        state = STATE_WAITING;
-        break;
-      }
-      
+      // process end of track by playing any delay or queued notes
+      state = STATE_WAITING;
+      break;
     }
 
     // Stay in STATE_EVENTS, to read another event.
@@ -504,7 +497,7 @@ void loop() {
       }
     }
     
-    // Play the notes in the queue
+    // Play the notes in the queue, if any
     int i;
     for (i = 0; i < numQueued; ++i) {
       int noteNum = queue[i];
