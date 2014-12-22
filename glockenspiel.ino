@@ -696,7 +696,12 @@ boolean readNextLine(File *pFile, char *buffer, uint8_t bufferLength) {
   if (bint < 0) {
     return false;
   }
-  while (bint >= 0 && (char) bint != '\n' && (char) bint != '\r') {
+  while (bint >= 0 && (char) bint != '\n') {
+    if ((char) bint == '\r') {  // ignore returns.
+      bint = pFile->read();
+      continue;
+    }
+    
     if (lineLength >= bufferLength - 1) {
       // Line too long.
       return false;
@@ -772,7 +777,6 @@ boolean getNextFilename() {
   uint8_t curLineNum;
   char line[MAX_LINE_LENGTH + 1];
   
-  
   if (nowPlayingIdx == 255) {
     nowPlayingIdx = 0;
   } else {
@@ -793,12 +797,12 @@ boolean getNextFilename() {
     return false;
   }
   
-  curLineNum = 0;
+  curLineNum = (uint8_t) -1;;
   while (readNextLine(&file, line, MAX_LINE_LENGTH + 1)) {
+    ++curLineNum;
     if (curLineNum == chosenLineNum) {
       break;
     }
-    ++curLineNum;
   }
   
   file.close();
@@ -809,7 +813,7 @@ boolean getNextFilename() {
     Serial.println(" from tmp playlist");
     return false;
   }
-  
+
   if (playingFname != 0) {
     free(playingFname);
   }
