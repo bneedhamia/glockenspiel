@@ -20,3 +20,11 @@ This is a work in progress. Project status is updated in the blog at [https://ne
 * **MidiFileStream** is a custom library for reading the MIDI files. See [https://github.com/bneedhamia/midifilestream](https://github.com/bneedhamia/midifilestream)
 * **SDConfigFile** is a custom library for reading the sketch configuration from an SD file. See [https://github.com/bneedhamia/sdconfigfile](https://github.com/bneedhamia/sdconfigfile)
 * **SD** is the standard Arduino SD card library. See [http://arduino.cc/en/Reference/SD](http://arduino.cc/en/Reference/SD)
+
+## Range
+The glockenspiel has 19 chromatic notes, ranging through
+
+    C5 = An octave above middle C
+    F#6 = a little over an octave and a fourth above C5
+
+inclusive. This provides enough range to play the melody of a large number of vocal pieces, if the melody is transposed up an octave (e.g., Middle C to C5)
