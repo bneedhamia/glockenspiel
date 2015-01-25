@@ -51,13 +51,17 @@
  * pinSelectWifi = the CC3000 chip select pin.
  * pinSelectSD = the SD chip select pin.
  *
- * pinLed = the LED to blink on error.
  * pinNoteOffset[] = the pin number of a solenoid that plays a chime.
  *  Indexed by the offset from MIN_NOTE_NUM. That is:
  *    pin = pinNoteOffset[midiNoteNum - MIN_NOTE_NUM];
  * MIN_NOTE_NUM = the MIDI note number of the lowest-pitched chime.
  * NUM_NOTE_PINS = the number of consecutive MIDI notes we support.
  *    That is, the number of chimes we have.
+ *
+ * pinButtonOff = the On/Off button. Internal pullup, so LOW = On; HIGH = Off.
+ * pinLedOn = the On/Off state LED. On when not stopped.
+ *
+ * Pins 50-53 are the SPI bus.
  */
 
 const int pinWifiInt = 2;
@@ -65,14 +69,15 @@ const int pinWifiEnable = 7;
 const int pinSelectWifi = 10;
 const int pinSelectSD = 8;
 
-const int pinLed = 13;
-
 const int MIN_NOTE_NUM = 72; // Midi note 72 corresponds to C5
 const int pinNoteOffset[] = {
   23, 25, 27, 29, 31, 33, 35, 37, 39, 41,
   22, 24, 26, 28, 30, 32, 34, 36, 38
 };
 const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
+
+const int pinButtonOff = A14; // used as Digital Input
+const int pinLedOn = A15;     // used as Digital Output
 
 /*
  * time per solenoid actuation, in milliseconds.
@@ -146,9 +151,10 @@ uint8_t *playOrder;      // (malloc()ed) array of track numbers, size numPlaylis
 uint8_t nowPlayingIdx;   // if not 255, index into playOrder[] of the title we're currently playing
 char *playingFname;      // SD filename of the file being played.
 MidiFileStream midiFile; // The current Midi file being played.
-File playingFile;               // the underlying SD File.
+File playingFile;        // the underlying SD File.
 
 char state;              // State of our file-playing machine. See STATE_*.
+uint8_t ledOnState;      // State of our On/Off indicator LED. HIGH = on; LOW = off.
 
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
@@ -204,11 +210,14 @@ void setup() {
 
   Ram_TableDisplay(); //Debug
 
-  pinMode(pinLed, OUTPUT);
   pinMode(pinSelectSD, OUTPUT);
   for (i = 0; i < NUM_NOTE_PINS; ++i) {
     pinMode(pinNoteOffset[i], OUTPUT);
   }
+  
+  pinMode(pinButtonOff, INPUT);
+  digitalWrite(pinButtonOff, HIGH);   // enable internal pull-up resistor
+  pinMode(pinLedOn, OUTPUT);
   
   state = STATE_ERROR;
   playlistUrl = 0;
@@ -248,6 +257,7 @@ void setup() {
   nowPlayingIdx = 255;
   
   state = STATE_END_FILE;
+  ledOnState = LOW;
 
 }
 
@@ -263,12 +273,15 @@ void loop() {
   switch (state) {
   
   case STATE_ERROR:
+    /*
+    //XXX Rewrite this, because the SPI bus seems to use pin 13.
     // Show an error by blinking the LED
     if ((millis() % 1000) < 500) {
       digitalWrite(pinLed, HIGH);
     } else {
       digitalWrite(pinLed, LOW);
     }
+    */
     break;
     
   case STATE_STOPPED:
@@ -526,6 +539,17 @@ void loop() {
     Serial.println(state);
     state = STATE_ERROR;
   }
+  
+  // Output to the LEDs
+  
+  //XXX for now, just echo the On/Off switch state to the LED.
+  if (digitalRead(pinButtonOff)) {
+    ledOnState = LOW;
+  } else {
+    ledOnState = HIGH;
+  }
+  digitalWrite(pinLedOn, ledOnState);
+  
 }
 
 /*
