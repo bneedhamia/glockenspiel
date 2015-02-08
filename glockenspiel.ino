@@ -62,6 +62,8 @@
  * pinLedIsOn = the On/Off state LED. Lighted when not stopped.
  * pinButtonPause = the Play/Pause button. Internal pullup.
  * pinLedPlaying = the Playing/Paused state. Lighted when playing; blinking when paused.
+ * pinButtonBack = the Skip backward button. Internal pullup.
+ * pinLedBack = the Skip back request state. Lighted when the button is pushed.
  *
  * Pins 50-53 are the SPI bus.
  */
@@ -79,9 +81,12 @@ const int pinNoteOffset[] = {
 const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
 
 const int pinButtonOff = A14; // Digital Input
-const int pinLedIsOn = A15;     // Digital Output
-const int pinButtonPause = 48; // Digital Input
+const int pinLedIsOn = A15;   // Digital Output
+const int pinButtonPause = 48;// Digital Input
 const int pinLedPlaying = 49; // Digital Output
+const int pinButtonBack = 46; // Digital Input
+const int pinLedBack = 47;    // Digital Output
+
 
 /*
  * time per solenoid actuation, in milliseconds.
@@ -226,6 +231,10 @@ void setup() {
   pinMode(pinButtonPause, INPUT);
   digitalWrite(pinButtonPause, HIGH);   // enable internal pull-up resistor
   pinMode(pinLedPlaying, OUTPUT);
+  
+  pinMode(pinButtonBack, INPUT);
+  digitalWrite(pinButtonBack, HIGH);   // enable internal pull-up resistor
+  pinMode(pinLedBack, OUTPUT);
   
   state = STATE_ERROR;
   playlistUrl = 0;
@@ -583,6 +592,14 @@ void loop() {
     ledOnState = HIGH;
   }
   digitalWrite(pinLedPlaying, ledOnState);
+  
+  //XXX for now, just echo the Skip Back switch state to the LED.
+  if (digitalRead(pinButtonBack)) {
+    ledOnState = LOW;
+  } else {
+    ledOnState = HIGH;
+  }
+  digitalWrite(pinLedBack, ledOnState);
   
 }
 
