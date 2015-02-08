@@ -1,7 +1,7 @@
 /*
  * Midi-file-playing Glockenspiel.
  * 
- * Copyright (c) 2014 Bradford Needham
+ * Copyright (c) 2014, 2015 Bradford Needham
  * (@bneedhamia, https://www.needhamia.com)
  *
  * Licensed under The MIT License (MIT),
@@ -59,7 +59,9 @@
  *    That is, the number of chimes we have.
  *
  * pinButtonOff = the On/Off button. Internal pullup, so LOW = On; HIGH = Off.
- * pinLedOn = the On/Off state LED. On when not stopped.
+ * pinLedIsOn = the On/Off state LED. Lighted when not stopped.
+ * pinButtonPause = the Play/Pause button. Internal pullup.
+ * pinLedPlaying = the Playing/Paused state. Lighted when playing; blinking when paused.
  *
  * Pins 50-53 are the SPI bus.
  */
@@ -76,8 +78,10 @@ const int pinNoteOffset[] = {
 };
 const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
 
-const int pinButtonOff = A14; // used as Digital Input
-const int pinLedOn = A15;     // used as Digital Output
+const int pinButtonOff = A14; // Digital Input
+const int pinLedIsOn = A15;     // Digital Output
+const int pinButtonPause = 48; // Digital Input
+const int pinLedPlaying = 49; // Digital Output
 
 /*
  * time per solenoid actuation, in milliseconds.
@@ -217,7 +221,11 @@ void setup() {
   
   pinMode(pinButtonOff, INPUT);
   digitalWrite(pinButtonOff, HIGH);   // enable internal pull-up resistor
-  pinMode(pinLedOn, OUTPUT);
+  pinMode(pinLedIsOn, OUTPUT);
+  
+  pinMode(pinButtonPause, INPUT);
+  digitalWrite(pinButtonPause, HIGH);   // enable internal pull-up resistor
+  pinMode(pinLedPlaying, OUTPUT);
   
   state = STATE_ERROR;
   playlistUrl = 0;
@@ -229,6 +237,24 @@ void setup() {
     Serial.println("SD.begin() failed. Check card insertion.");
     return;
   }
+  
+  // Exercise each solenoid twice, because they seem to be not quite charged on startup.
+  for (i = 0; i < NUM_NOTE_PINS; ++i) {
+    digitalWrite(pinNoteOffset[i], HIGH);
+    delay(MS_PER_STRIKE);
+    digitalWrite(pinNoteOffset[i], LOW);
+    delay(MS_PER_STRIKE);
+    delay(125);
+  }
+  delay(500);
+  for (i = 0; i < NUM_NOTE_PINS; ++i) {
+    digitalWrite(pinNoteOffset[i], HIGH);
+    delay(MS_PER_STRIKE);
+    digitalWrite(pinNoteOffset[i], LOW);
+    delay(MS_PER_STRIKE);
+    delay(125);
+  }
+  delay(2000); //XXX remove once the initial state = stopped.
   
   //XXX goes in the to be written stop -> play state transition.
   
@@ -548,7 +574,15 @@ void loop() {
   } else {
     ledOnState = HIGH;
   }
-  digitalWrite(pinLedOn, ledOnState);
+  digitalWrite(pinLedIsOn, ledOnState);
+  
+  //XXX for now, just echo the Play/Pause switch state to the LED.
+  if (digitalRead(pinButtonPause)) {
+    ledOnState = LOW;
+  } else {
+    ledOnState = HIGH;
+  }
+  digitalWrite(pinLedPlaying, ledOnState);
   
 }
 
