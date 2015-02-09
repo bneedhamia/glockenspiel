@@ -1,8 +1,9 @@
 /*
  * Midi-file-playing Glockenspiel.
+ * https://github.com/bneedhamia/glockenspiel
  * 
  * Copyright (c) 2014, 2015 Bradford Needham
- * (@bneedhamia, https://www.needhamia.com)
+ * ( @bneedhamia , https://www.needhamia.com )
  *
  * Licensed under The MIT License (MIT),
  * a copy of which should have been supplied with this file.
@@ -28,7 +29,13 @@
  * and the USB cable.
  * Without the 9V supply, the solenoids won't play.
  *
- * To operate: XXX add instructions.
+ * To operate:
+ * 1) Create the glocken.cfg, playlist.m3u, and Midi files
+ *    and copy them to the SD card.
+ * 2) Insert the SD card into the glockenspiel and plug in the power.
+ * 3) Press the On/Off button to start playing.
+ *    At any time, press the On/Off button again to stop playing.
+ * XXX more to come as features are added.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -59,7 +66,9 @@
  *    That is, the number of chimes we have.
  *
  * pinButtonOff = the On/Off button. Internal pullup, so LOW = On; HIGH = Off.
- * pinLedIsOn = the On/Off state LED. Lighted when not stopped.
+ * pinLedIsOn = the On/Off/Error state LED:
+ *   off = stopped; blinking = error (e.g, SD card file error);
+ *   on = running.
  * pinButtonPause = the Play/Pause button. Internal pullup.
  * pinLedPlaying = the Playing/Paused state. Lighted when playing; blinking when paused.
  * pinButtonBack = the Skip backward button. Internal pullup.
@@ -82,17 +91,23 @@ const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
 
 const int pinButtonOff = A14; // Digital Input
 const int pinLedIsOn = A15;   // Digital Output
-const int pinButtonPause = 48;// Digital Input
-const int pinLedPlaying = 49; // Digital Output
 const int pinButtonBack = 46; // Digital Input
 const int pinLedBack = 47;    // Digital Output
-
+const int pinButtonPause = 48;// Digital Input
+const int pinLedPlaying = 49; // Digital Output
 
 /*
  * time per solenoid actuation, in milliseconds.
  * Too large a number here can burn out the solenoids.
+ * Too small a number here will cause some solenoids to not strike.
  */
 const int MS_PER_STRIKE = 3;
+
+/*
+ * time (milliseconds) a button output must remain stable
+ * to be considered real. Used for debounce.
+ */
+const unsigned long MAX_BOUNCE_MS = 50;
 
 /*
  * maximum line length in any file we deal with.
@@ -108,7 +123,7 @@ const uint8_t MAX_LINE_LENGTH = 128;
 const char *CONFIG_FILE = "glocken.cfg";
 
 /*
- * The name of the playlist we'll create from
+ * The name of the SD card playlist we'll create from
  * the original, net playlist.
  * This tmp playlist will refer only to SD files (not urls).
  * We use this instead of an in-memory playlist to save memory.
@@ -159,18 +174,20 @@ uint8_t *playOrder;      // (malloc()ed) array of track numbers, size numPlaylis
                          //   in order of play.  E.g., if not shuffled, [0] = 0, [1] = 1, etc.
 uint8_t nowPlayingIdx;   // if not 255, index into playOrder[] of the title we're currently playing
 char *playingFname;      // SD filename of the file being played.
-MidiFileStream midiFile; // The current Midi file being played.
-File playingFile;        // the underlying SD File.
+MidiFileStream midiFile; // The current, open Midi file being played.
+File playingFile;        // the underlying SD File of that Midi file.
 
 char state;              // State of our file-playing machine. See STATE_*.
-uint8_t ledOnState;      // State of our On/Off indicator LED. HIGH = on; LOW = off.
+
+boolean lastButtonOff;    // previous debounced state of the On/Off button. true = pressed.
+boolean testOnOff;       //XXX just for testing behavior of the On/Off button.
 
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
 /*
  * For performance measurement,
  * maxEventReadMillis = the maximum time (milliseconds) it took to read an event from SD.
- * maxMicrosLate = the maximum time (microseconds) that we're late in playing an event.
+ * maxMicrosLate = the maximum time (microseconds) that we're late in playing a Midi event.
  */
 unsigned long maxEventReadMillis = 0;
 unsigned long maxMicrosLate = 0;
@@ -188,13 +205,13 @@ unsigned long startMicros;
 
 /*
  * the time, in microseconds, between startMicros
- * and the most-recently-queued event.
+ * and the most-recently-queued Midi event.
  */
 unsigned long microsSinceStart;
 
 /*
  * The queue of notes to play simultaneously.
- * The maximum is the number of distinct notes we can play.
+ * The maximum is the number of distinct pitches we can play simultaneously.
  *
  * queue[] = Midi note numbers waiting to be played simultaneously.
  * numQueued = the number of Midi Note On events in queue[].
@@ -219,6 +236,8 @@ void setup() {
 
   Ram_TableDisplay(); //Debug
 
+  // Set up all the pins we use.
+  
   pinMode(pinSelectSD, OUTPUT);
   for (i = 0; i < NUM_NOTE_PINS; ++i) {
     pinMode(pinNoteOffset[i], OUTPUT);
@@ -236,7 +255,13 @@ void setup() {
   digitalWrite(pinButtonBack, HIGH);   // enable internal pull-up resistor
   pinMode(pinLedBack, OUTPUT);
   
+  // initialize our variables
+  
   state = STATE_ERROR;
+  
+  lastButtonOff = false;
+  testOnOff = false;
+
   playlistUrl = 0;
   wifiSsid = 0;
   wifiPassword = 0;
@@ -292,7 +317,6 @@ void setup() {
   nowPlayingIdx = 255;
   
   state = STATE_END_FILE;
-  ledOnState = LOW;
 
 }
 
@@ -302,21 +326,41 @@ void loop() {
   int bLeft;
   long uSecs;
   long microsToWait;
+  boolean buttonPressed; // temporary
+  boolean changeOnOff;  // If true, change the On/Off (Stopped) state.
   
-  //XXX Check any buttons.
+  /*
+   * Read the buttons.
+   * To filter out bounce, sample only once every MAX_BOUNCE_MS. 
+   */
   
+  if ((millis() % MAX_BOUNCE_MS) == 0) {
+    buttonPressed = false;
+    if (digitalRead(pinButtonOff) == LOW) { // Internal pullup = button is "active low"
+      buttonPressed = true;
+    }
+    
+    /*
+     * The on/off button acts as a toggling button.
+     * That is, the on/off state changes only when you press the button;
+     * the button release is ignored.
+     */
+    changeOnOff = false;
+    if ((lastButtonOff != buttonPressed) && buttonPressed) {
+      changeOnOff = true;
+    }
+    
+    lastButtonOff = buttonPressed;
+  }
+  
+  /*
+   * Now that we have our button inputs,
+   * calculate the next state of our state machine.
+   */
   switch (state) {
   
   case STATE_ERROR:
-    /*
-    //XXX Rewrite this, because the SPI bus seems to use pin 13.
-    // Show an error by blinking the LED
-    if ((millis() % 1000) < 500) {
-      digitalWrite(pinLed, HIGH);
-    } else {
-      digitalWrite(pinLed, LOW);
-    }
-    */
+    // Nothing to do.
     break;
     
   case STATE_STOPPED:
@@ -325,6 +369,7 @@ void loop() {
     
   case STATE_END_FILE:
     if (!getNextFilename()) {
+      // An error occurred
       
       // Report our performance numbers
       Serial.print("Maximum event-reading delay = ");
@@ -335,7 +380,7 @@ void loop() {
       Serial.print(maxMicrosLate);
       Serial.print(" us");
       
-      state = STATE_STOPPED;  // no next file to play.
+      state = STATE_ERROR;  // we can't recover, so blink the error light.
     } else {       
       playingFile = SD.open(playingFname, FILE_READ);
       if (!playingFile) {
@@ -408,6 +453,7 @@ void loop() {
         maxEventReadMillis = delayMillis;
       }
     }
+    
     if (eventType == ET_END) {
       // No more events in this track. Normal end of a track.
       if (numQueued > 0) {
@@ -550,10 +596,11 @@ void loop() {
     for (i = 0; i < numQueued; ++i) {
       int noteNum = queue[i];
       
+      // If the note is out of our range, don't try to play it.
       if (!(MIN_NOTE_NUM <= noteNum && noteNum < MIN_NOTE_NUM + NUM_NOTE_PINS)) {
         Serial.print("Skipping queued[");
         Serial.print(i);
-        Serial.print("] note number ");
+        Serial.print("] note ");
         Serial.println(noteNum);
         continue;
       }
@@ -575,17 +622,25 @@ void loop() {
     state = STATE_ERROR;
   }
   
-  // Output to the LEDs
-  
-  //XXX for now, just echo the On/Off switch state to the LED.
-  if (digitalRead(pinButtonOff)) {
-    ledOnState = LOW;
+  /*
+   * The On/Off button's LED can show three states:
+   * Error; Stopped; not-Stopped (that is, running)
+   */
+  if (state == STATE_ERROR) {
+      // Blink
+    if ((millis() % 1000) < 500) {
+      digitalWrite(pinLedIsOn, HIGH);
+    } else {
+      digitalWrite(pinLedIsOn, LOW);
+    }
+  } else if (state == STATE_STOPPED) {
+    digitalWrite(pinLedIsOn, LOW);
   } else {
-    ledOnState = HIGH;
+    digitalWrite(pinLedIsOn, HIGH);
   }
-  digitalWrite(pinLedIsOn, ledOnState);
   
   //XXX for now, just echo the Play/Pause switch state to the LED.
+  uint8_t ledOnState; //XXX replace this eventually.
   if (digitalRead(pinButtonPause)) {
     ledOnState = LOW;
   } else {
@@ -837,7 +892,7 @@ char *cacheFile(const char *url) {
 
 /*
  * Choose and open the next file we're to play.
- * Returns 1 if successful; 0 if error or if there is nothing more to play.
+ * Returns 1 if successful; 0 if error.
  */
 boolean getNextFilename() {    
   uint8_t chosenLineNum;    // line number in the tmp playlist containing the file to play.
