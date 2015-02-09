@@ -288,36 +288,9 @@ void setup() {
     delay(MS_PER_STRIKE);
     delay(125);
   }
-  delay(2000); //XXX remove once the initial state = stopped.
   
-  //XXX goes in the to be written stop -> play state transition.
-  
-  readConfiguration();
-  Serial.print("Playlist: ");
-  Serial.println(playlistUrl);
-  
-  if (playlistSDName != 0) {
-    free(playlistSDName);
-  }
-  playlistSDName = cacheFile(playlistUrl);
-  if (!playlistSDName) {
-    Serial.print("Cacheing ");
-    Serial.print(playlistUrl);
-    Serial.print(" failed. Press stop and start");
-    state = STATE_ERROR;
-    return;
-  }
-  
-  if (!transformSDPlaylist()) {
-    Serial.print("Failed to read playlist: ");
-    Serial.println(playlistSDName);
-  }
-  
-  setPlayOrder(); //XXX do this whenever the playlist runs out - that is, we always loop.
-  nowPlayingIdx = 255;
-  
-  state = STATE_END_FILE;
-
+  // Wait for the user to press the on/off button.
+  state = STATE_STOPPED;
 }
 
 void loop() {
@@ -364,10 +337,51 @@ void loop() {
     break;
     
   case STATE_STOPPED:
-    // Nothing to do.
+    if (!changeOnOff) {
+      break; // nothing to do.
+    }
+    
+    /*
+     * The user has pressed the on/off button.
+     * Start playing.
+     */
+    
+    readConfiguration();
+    Serial.print("Playlist: ");
+    Serial.println(playlistUrl);
+    
+    if (playlistSDName != 0) {
+      free(playlistSDName);
+    }
+    playlistSDName = cacheFile(playlistUrl);
+    if (!playlistSDName) {
+      Serial.print("Cacheing ");
+      Serial.print(playlistUrl);
+      Serial.print(" failed. Press stop and start");
+      state = STATE_ERROR;
+      return;
+    }
+    
+    if (!transformSDPlaylist()) {
+      Serial.print("Failed to read playlist: ");
+      Serial.println(playlistSDName);
+    }
+    
+    setPlayOrder(); //XXX do this whenever the playlist runs out - that is, we always loop.
+    nowPlayingIdx = 255;
+    
+    Ram_TableDisplay(); // Debug: to see on/off memory leaks.    
+    state = STATE_END_FILE;
     break;
     
   case STATE_END_FILE:
+  
+    // Handle the on/off button
+    if (changeOnOff) {
+      state = STATE_STOPPED;
+      break;
+    }
+    
     if (!getNextFilename()) {
       // An error occurred
       
@@ -410,6 +424,15 @@ void loop() {
     break;
     
   case STATE_END_TRACK:
+  
+    // Handle the on/off button
+    if (changeOnOff) {
+      midiFile.end();
+      playingFile.close();
+
+      state = STATE_STOPPED;
+      break;
+    }
 
     chunkType = midiFile.openChunk();
     if (chunkType != CT_MTRK) {
@@ -435,6 +458,15 @@ void loop() {
     break;
     
   case STATE_EVENTS:
+    
+    // Handle the on/off button
+    if (changeOnOff) {
+      midiFile.end();
+      playingFile.close();
+
+      state = STATE_STOPPED;
+      break;
+    }
   
     /*
      * If we have read an event we need to reprocess,
@@ -556,6 +588,7 @@ void loop() {
         break;
 
     } else if (eventType == ET_END_TRACK) {
+      
       // process end of track by playing any delay or queued notes
       state = STATE_WAITING;
       break;
@@ -565,6 +598,15 @@ void loop() {
     break;
     
   case STATE_WAITING:
+    
+    // Handle the on/off button
+    if (changeOnOff) {
+      midiFile.end();
+      playingFile.close();
+
+      state = STATE_STOPPED;
+      break;
+    }
     
     /*
      * If we need to wait a long time to play the notes,
@@ -660,13 +702,24 @@ void loop() {
 
 /*
  * Read our settings from our SD configuration file.
+ * Returns true if successful; false if an error occurred.
  */
 boolean readConfiguration() {
   SDConfigFile cfg;
 
-  playlistUrl = 0;
-  wifiSsid = 0;
-  wifiPassword = 0;
+  // Clear any previous state.
+  if (playlistUrl) {
+    free(playlistUrl);
+    playlistUrl = 0;
+  }
+  if (wifiSsid) {
+    free(wifiSsid);
+    wifiSsid = 0;
+  }
+  if (wifiPassword) {
+    free(wifiPassword);
+    wifiPassword = 0;
+  }
   
   if (!cfg.begin(CONFIG_FILE, MAX_LINE_LENGTH)) {
     Serial.print("Failed to open configuration file: ");
@@ -701,6 +754,8 @@ boolean readConfiguration() {
   }
   
   cfg.end();
+  
+  return true;
 }
 
 /*
