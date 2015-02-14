@@ -35,6 +35,8 @@
  * 2) Insert the SD card into the glockenspiel and plug in the power.
  * 3) Press the On/Off button to start playing.
  *    At any time, press the On/Off button again to stop playing.
+ * 4) While playing, press the Play/Pause button to pause playing.
+ *    At any time, press the Play/Pause button again to resume playing.
  * XXX more to come as features are added.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
@@ -107,7 +109,7 @@ const int MS_PER_STRIKE = 3;
  * time (milliseconds) a button output must remain stable
  * to be considered real. Used for debounce.
  */
-const unsigned long MAX_BOUNCE_MS = 50;
+const int MAX_BOUNCE_MS = 50;
 
 /*
  * maximum line length in any file we deal with.
@@ -153,11 +155,13 @@ const long MAX_MICROS_TO_DELAY = 11 * 1000L;
  */
 const char STATE_ERROR = (char) 0;
 const char STATE_STOPPED = (char) 1;
-const char STATE_END_FILE = (char) 2;
-const char STATE_END_TRACK = (char) 3;
-const char STATE_EVENTS = (char) 4;
-const char STATE_WAITING = (char) 5;
+const char STATE_PAUSED = (char) 2;
+const char STATE_END_FILE = (char) 3;
+const char STATE_END_TRACK = (char) 4;
+const char STATE_EVENTS = (char) 5;
+const char STATE_WAITING = (char) 6;
 
+void doPause();
 boolean readConfiguration();
 boolean transformSDPlaylist();
 boolean getNextFilename();
@@ -178,9 +182,16 @@ MidiFileStream midiFile; // The current, open Midi file being played.
 File playingFile;        // the underlying SD File of that Midi file.
 
 char state;              // State of our file-playing machine. See STATE_*.
+char pausedState;        // State to restore after pausing
 
-boolean lastButtonOff;    // previous debounced state of the On/Off button. true = pressed.
-boolean testOnOff;       //XXX just for testing behavior of the On/Off button.
+boolean pressedButtonOn; // raw previous state of the On/off button
+boolean heldButtonOn;    // debounced previous state of the On/off button.
+unsigned long changedButtonOnMs; // time (milliseconds) of the last change to heldButtonOn
+
+boolean pressedButtonPlay; // raw previous state of the Play/pause button
+boolean heldButtonPlay;    // debounced previous state of the Play/pause button.
+unsigned long changedButtonPlayMs; // time (milliseconds) of the last change to heldButtonPlay
+
 
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
@@ -189,8 +200,8 @@ long microsPerTick = 1;   // current tempo, in microseconds per tick.
  * maxEventReadMillis = the maximum time (milliseconds) it took to read an event from SD.
  * maxMicrosLate = the maximum time (microseconds) that we're late in playing a Midi event.
  */
-unsigned long maxEventReadMillis = 0;
-unsigned long maxMicrosLate = 0;
+unsigned long maxEventReadMillis;
+unsigned long maxMicrosLate;
 
 /*
  * Time returned from micros() when we started playing the current file.
@@ -258,15 +269,7 @@ void setup() {
   // initialize our variables
   
   state = STATE_ERROR;
-  
-  lastButtonOff = false;
-  testOnOff = false;
 
-  playlistUrl = 0;
-  wifiSsid = 0;
-  wifiPassword = 0;
-  playlistSDName = 0;
-  
   if (!SD.begin(pinSelectSD)) {
     Serial.println("SD.begin() failed. Check card insertion.");
     return;
@@ -299,33 +302,68 @@ void loop() {
   int bLeft;
   long uSecs;
   long microsToWait;
-  boolean buttonPressed; // temporary
+  boolean buttonPressed; // temporary state of a button
   boolean changeOnOff;  // If true, change the On/Off (Stopped) state.
+  boolean changePlayPause; // If true, change the Play/Pause (Paused) state.
+  
+  changeOnOff = false;
+  changePlayPause = false;
   
   /*
-   * Read the buttons.
-   * To filter out bounce, sample only once every MAX_BOUNCE_MS. 
+   * When the user presses the on/off button for enough time,
+   * toggle the on/off state:
+   * Debounce the on/off button (see http://arduino.cc/en/Tutorial/Debounce )
+   * Record the time whenever the raw button state changes;
+   * If the button's been stable long enough,
+   * Set changeOnOff if the button has been reliably pressed.
    */
-  
-  if ((millis() % MAX_BOUNCE_MS) == 0) {
-    buttonPressed = false;
-    if (digitalRead(pinButtonOff) == LOW) { // Internal pullup = button is "active low"
-      buttonPressed = true;
+
+  buttonPressed = false;
+  if (digitalRead(pinButtonOff) == LOW) { // Internal pullup = button is "active low"
+    buttonPressed = true;
+  }
+
+  if (buttonPressed != pressedButtonOn) {
+    changedButtonOnMs = millis();
+  }
+  pressedButtonOn = buttonPressed;
+
+  if ((millis() - changedButtonOnMs) > MAX_BOUNCE_MS) {
+    if (buttonPressed != heldButtonOn) {
+      heldButtonOn = buttonPressed;
+      
+      changeOnOff = false;
+      if (buttonPressed) {
+        changeOnOff = true;
+      }
     }
-    
-    /*
-     * The on/off button acts as a toggling button.
-     * That is, the on/off state changes only when you press the button;
-     * the button release is ignored.
-     */
-    changeOnOff = false;
-    if ((lastButtonOff != buttonPressed) && buttonPressed) {
-      changeOnOff = true;
-    }
-    
-    lastButtonOff = buttonPressed;
   }
   
+  /*
+   * When the user presses the play/pause button for enough time,
+   * toggle the play/pause state.
+   */
+
+  buttonPressed = false;
+  if (digitalRead(pinButtonPause) == LOW) { // Internal pullup = button is "active low"
+    buttonPressed = true;
+  }
+
+  if (buttonPressed != pressedButtonPlay) {
+    changedButtonPlayMs = millis();
+  }
+  pressedButtonPlay = buttonPressed;
+
+  if ((millis() - changedButtonPlayMs) > MAX_BOUNCE_MS) {
+    if (buttonPressed != heldButtonPlay) {
+      heldButtonPlay = buttonPressed;
+      changePlayPause = false;
+      if (buttonPressed) {
+        changePlayPause = true;
+      }
+    }
+  } 
+    
   /*
    * Now that we have our button inputs,
    * calculate the next state of our state machine.
@@ -337,6 +375,9 @@ void loop() {
     break;
     
   case STATE_STOPPED:
+  
+    // (ignore presses of the other buttons)
+    
     if (!changeOnOff) {
       break; // nothing to do.
     }
@@ -350,8 +391,9 @@ void loop() {
     Serial.print("Playlist: ");
     Serial.println(playlistUrl);
     
-    if (playlistSDName != 0) {
+    if (playlistSDName) {
       free(playlistSDName);
+      playlistSDName = 0;
     }
     playlistSDName = cacheFile(playlistUrl);
     if (!playlistSDName) {
@@ -367,11 +409,29 @@ void loop() {
       Serial.println(playlistSDName);
     }
     
-    setPlayOrder(); //XXX do this whenever the playlist runs out - that is, we always loop.
+    setPlayOrder();
     nowPlayingIdx = 255;
     
     Ram_TableDisplay(); // Debug: to see on/off memory leaks.    
     state = STATE_END_FILE;
+    break;
+    
+  case STATE_PAUSED:
+    // Handle the on/off button
+    if (changeOnOff) {
+      //XXX close what needs to be closed.
+      state = STATE_STOPPED;
+      break;
+    }
+    
+    if (!changePlayPause) {
+      break; // nothing to do.
+    }
+    
+    // Un-pause
+    //XXX adjust the playing stuff.
+    
+    state = pausedState;
     break;
     
   case STATE_END_FILE:
@@ -379,6 +439,12 @@ void loop() {
     // Handle the on/off button
     if (changeOnOff) {
       state = STATE_STOPPED;
+      break;
+    }
+    
+    // Handle the pause button
+    if (changePlayPause) {
+      doPause();
       break;
     }
     
@@ -433,6 +499,12 @@ void loop() {
       state = STATE_STOPPED;
       break;
     }
+    
+    // Handle the pause button
+    if (changePlayPause) {
+      doPause();
+      break;
+    }
 
     chunkType = midiFile.openChunk();
     if (chunkType != CT_MTRK) {
@@ -467,7 +539,13 @@ void loop() {
       state = STATE_STOPPED;
       break;
     }
-  
+      
+    // Handle the pause button
+    if (changePlayPause) {
+      doPause();
+      break;
+    }
+
     /*
      * If we have read an event we need to reprocess,
      * use that.
@@ -608,6 +686,12 @@ void loop() {
       break;
     }
     
+    // Handle the pause button
+    if (changePlayPause) {
+      doPause();
+      break;
+    }
+    
     /*
      * If we need to wait a long time to play the notes,
      * wait for another call to loop().
@@ -681,15 +765,22 @@ void loop() {
     digitalWrite(pinLedIsOn, HIGH);
   }
   
-  //XXX for now, just echo the Play/Pause switch state to the LED.
-  uint8_t ledOnState; //XXX replace this eventually.
-  if (digitalRead(pinButtonPause)) {
-    ledOnState = LOW;
+  /*
+   * The Play/Pause button's LED indicates
+   * whether we are paused or not:
+   * Off = playing;
+   * On = paused.
+   */
+ 
+  if (state == STATE_PAUSED) {
+    digitalWrite(pinLedPlaying, HIGH);
   } else {
-    ledOnState = HIGH;
+    digitalWrite(pinLedPlaying, LOW);
   }
-  digitalWrite(pinLedPlaying, ledOnState);
   
+  uint8_t ledOnState; //XXX replace this eventually.
+ 
+ /* 
   //XXX for now, just echo the Skip Back switch state to the LED.
   if (digitalRead(pinButtonBack)) {
     ledOnState = LOW;
@@ -697,7 +788,20 @@ void loop() {
     ledOnState = HIGH;
   }
   digitalWrite(pinLedBack, ledOnState);
+ */
+}
+
+/*
+ * Pauses playback, preserving the state
+ * so that it can be resumed.
+ */
+void doPause() {
+  pausedState = state;
   
+  //XXX do the right thing to adjust for the pause duration.
+  //XXX otherwise playback will race until it catches up.
+  
+  state = STATE_PAUSED;
 }
 
 /*
@@ -729,19 +833,19 @@ boolean readConfiguration() {
   
   while (cfg.readNextSetting()) {
     if (strcmp("ssid", cfg.getName()) == 0) {
-      if (wifiSsid != 0) {
+      if (wifiSsid) {
         free(wifiSsid);
       }
       wifiSsid = cfg.copyValue();
       
     } else if (strcmp("password", cfg.getName()) == 0) {
-      if (wifiPassword != 0) {
+      if (wifiPassword) {
         free(wifiPassword);
       }
       wifiPassword = cfg.copyValue();
 
     } else if (strcmp("playUrl", cfg.getName()) == 0) {
-      if (playlistUrl != 0) {
+      if (playlistUrl) {
         free(playlistUrl);
       }
       playlistUrl = cfg.copyValue();
@@ -783,7 +887,13 @@ boolean transformSDPlaylist() {
   
   numPlaylistTitles = 0;
   
-  SD.remove((char *) SD_TMP_PLAYLIST);
+  if (SD.exists((char *) SD_TMP_PLAYLIST)) {
+    if (!SD.remove((char *) SD_TMP_PLAYLIST)) {
+      Serial.println("failed to remove tmp playlist");
+      fileIn.close();
+      return false;
+    }
+  }
   fileOut = SD.open(SD_TMP_PLAYLIST, FILE_WRITE);
   if (!fileOut) {
     Serial.print("Create failed: ");
@@ -826,7 +936,7 @@ boolean transformSDPlaylist() {
   }
   
   // Allocate the playOrder[] array
-  if (playOrder != 0) {
+  if (playOrder) {
     free(playOrder);
   }
   playOrder = (uint8_t *) malloc(numPlaylistTitles * sizeof(uint8_t));
@@ -846,7 +956,7 @@ boolean transformSDPlaylist() {
  * based on the 
  */
 void setPlayOrder() {
-  int i;
+  uint8_t i;
 
   // We currently support only in-order play (no shuffle yet).
   
@@ -914,11 +1024,10 @@ char *cacheFile(const char *url) {
   prefixLen = strlen(filePrefixLC);
   if (strncmp(filePrefixLC, url, prefixLen) == 0 || strncmp(filePrefixUC, url, prefixLen) == 0) {
     // It's a file. Return the local name.
-    len = strlen(url) - prefixLen;
+    len = strlen(url) - (int) prefixLen;
     result = (char *) malloc(len + 1);
     if (result == 0) {
-      // out of memory
-      return 0;
+      return 0;      // out of memory
     }
     strcpy(result, &url[prefixLen]);
      
@@ -937,8 +1046,7 @@ char *cacheFile(const char *url) {
   len = strlen(url);
   result = (char *) malloc(len + 1);
   if (result == 0) {
-    // out of memory
-    return 0;
+    return 0;    // out of memory
   }
   strcpy(result, url);
   
@@ -992,11 +1100,11 @@ boolean getNextFilename() {
     return false;
   }
 
-  if (playingFname != 0) {
+  if (playingFname) {
     free(playingFname);
   }
   playingFname = (char *) malloc(strlen(line) + 1);
-  if (playingFname == 0) {
+  if (!playingFname) {
     Serial.println("mem");
     return false;
   }
