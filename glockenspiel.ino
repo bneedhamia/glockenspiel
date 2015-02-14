@@ -37,6 +37,7 @@
  *    At any time, press the On/Off button again to stop playing.
  * 4) While playing, press the Play/Pause button to pause playing.
  *    At any time, press the Play/Pause button again to resume playing.
+ * 5) While playing or paused, press the Back button to skip backward one track.
  * XXX more to come as features are added.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
@@ -194,6 +195,10 @@ boolean pressedButtonPlay; // raw previous state of the Play/pause button
 boolean heldButtonPlay;    // debounced previous state of the Play/pause button.
 unsigned long changedButtonPlayMs; // time (milliseconds) of the last change to heldButtonPlay
 
+boolean pressedButtonBack; // raw previous state of the Back button
+boolean heldButtonBack;    // debounced previous state of the Back button.
+unsigned long changedButtonBackMs; // time (milliseconds) of the last change to heldButtonBack
+
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
 /*
@@ -306,9 +311,11 @@ void loop() {
   boolean buttonPressed; // temporary state of a button
   boolean changeOnOff;  // If true, change the On/Off (Stopped) state.
   boolean changePlayPause; // If true, change the Play/Pause (Paused) state.
+  boolean skipBack;     // If true, skip backward one track.
   
   changeOnOff = false;
   changePlayPause = false;
+  skipBack = false;
   
   /*
    * When the user presses the on/off button for enough time,
@@ -363,8 +370,33 @@ void loop() {
         changePlayPause = true;
       }
     }
-  } 
-    
+  }
+  
+  /*
+   * When the user presses the back button for enough time,
+   * skip backward one track.
+   */
+
+  buttonPressed = false;
+  if (digitalRead(pinButtonBack) == LOW) { // Internal pullup = button is "active low"
+    buttonPressed = true;
+  }
+
+  if (buttonPressed != pressedButtonBack) {
+    changedButtonBackMs = millis();
+  }
+  pressedButtonBack = buttonPressed;
+
+  if ((millis() - changedButtonBackMs) > MAX_BOUNCE_MS) {
+    if (buttonPressed != heldButtonBack) {
+      heldButtonBack = buttonPressed;
+      skipBack = false;
+      if (buttonPressed) {
+        skipBack = true;
+      }
+    }
+  }
+
   /*
    * Now that we have our button inputs,
    * calculate the next state of our state machine.
@@ -760,7 +792,7 @@ void loop() {
    * Error; Stopped; not-Stopped (that is, running)
    */
   if (state == STATE_ERROR) {
-      // Blink
+    // Blink
     if ((millis() % 1000) < 500) {
       digitalWrite(pinLedIsOn, HIGH);
     } else {
@@ -785,6 +817,14 @@ void loop() {
     digitalWrite(pinLedPlaying, LOW);
   }
   
+  /*
+   * The Back button's LED indicates
+   * that the Back button is being held.
+   */
+
+  digitalWrite(pinLedBack, heldButtonBack);
+ 
+  
   uint8_t ledOnState; //XXX replace this eventually.
  
  /* 
@@ -794,7 +834,6 @@ void loop() {
   } else {
     ledOnState = HIGH;
   }
-  digitalWrite(pinLedBack, ledOnState);
  */
 }
 
