@@ -183,6 +183,8 @@ File playingFile;        // the underlying SD File of that Midi file.
 
 char state;              // State of our file-playing machine. See STATE_*.
 char pausedState;        // State to restore after pausing
+unsigned long microsBehindNext; // while paused, difference between the start of the next queued event
+                         // and what the current time was when pause began.
 
 boolean pressedButtonOn; // raw previous state of the On/off button
 boolean heldButtonOn;    // debounced previous state of the On/off button.
@@ -191,7 +193,6 @@ unsigned long changedButtonOnMs; // time (milliseconds) of the last change to he
 boolean pressedButtonPlay; // raw previous state of the Play/pause button
 boolean heldButtonPlay;    // debounced previous state of the Play/pause button.
 unsigned long changedButtonPlayMs; // time (milliseconds) of the last change to heldButtonPlay
-
 
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
@@ -419,7 +420,9 @@ void loop() {
   case STATE_PAUSED:
     // Handle the on/off button
     if (changeOnOff) {
-      //XXX close what needs to be closed.
+      // Close the currently-playing file, if any.
+      midiFile.end();
+      playingFile.close();
       state = STATE_STOPPED;
       break;
     }
@@ -428,9 +431,13 @@ void loop() {
       break; // nothing to do.
     }
     
-    // Un-pause
-    //XXX adjust the playing stuff.
-    
+    /*
+     * Resume from where we paused at:
+     * Move the start-of-file time
+     * as if we never paused.
+     */
+    startMicros = (micros() + microsBehindNext) - microsSinceStart;
+
     state = pausedState;
     break;
     
@@ -798,8 +805,13 @@ void loop() {
 void doPause() {
   pausedState = state;
   
-  //XXX do the right thing to adjust for the pause duration.
-  //XXX otherwise playback will race until it catches up.
+  /*
+   * Save the current time relative to the next note
+   * so that we can restore that relationship on resume.
+   * If we don't do this, on resume we will try to catch up with the original start.
+   */
+  microsBehindNext = (startMicros + microsSinceStart) - micros();
+
   
   state = STATE_PAUSED;
 }
