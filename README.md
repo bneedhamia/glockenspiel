@@ -14,6 +14,7 @@ This is a work in progress. Project status is updated in the blog at [https://ne
 * **SD** is a set of files to copy to the SD card. The files include a configuration file, a playlist, and a set of MIDI files to play.
 * **glockenspiel.fzz** is a Fritzing diagram of the circuit
 * **BillOfMaterials.ods** is a parts list for the project
+* **MechanicalNotes.odp** contains notes about the mechanical design
 
 ## Libraries used
 
