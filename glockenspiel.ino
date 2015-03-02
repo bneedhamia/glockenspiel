@@ -38,7 +38,11 @@
  * 4) While playing, press the Play/Pause button to pause playing.
  *    At any time, press the Play/Pause button again to resume playing.
  * 5) While playing or paused, press the Back button to skip backward one track.
- * XXX more to come as features are added.
+ * 6) While playing or paused, press the Forward button to skip forward one track.
+ * 7) While playing or paused, press the Shuffle button to shuffle the tracks.
+ *    Press it again to play the tracks in order.
+ *XXX currently, the skip and shuffle buttons have no effect.
+ *XXX need to define when Shuffle affects the tracks.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -76,6 +80,10 @@
  * pinLedPlaying = the Playing/Paused state. Lighted when playing; blinking when paused.
  * pinButtonBack = the Skip backward button. Internal pullup.
  * pinLedBack = the Skip back request state. Lighted when the button is pushed.
+ * pinButtonForward = the Skip forward button. Internal pullup.
+ * pinLedForward = the Skip forward request state. Lighted when the button is pushed.
+ * pinButtonShuffle = the Shuffle Tracks button. Internal pullup.
+ * pinLedShuffle = the Shuffled Tracks state. Lighted when tracks are shuffled.
  *
  * Pins 50-53 are the SPI bus.
  */
@@ -94,6 +102,10 @@ const int NUM_NOTE_PINS = sizeof(pinNoteOffset) / sizeof(pinNoteOffset[0]);
 
 const int pinButtonOff = A14; // Digital Input
 const int pinLedIsOn = A15;   // Digital Output
+const int pinButtonShuffle = 42; // Digital Input
+const int pinLedShuffle = 43;    // Digital Output
+const int pinButtonForward = 44; // Digital Input
+const int pinLedForward = 45;    // Digital Output
 const int pinButtonBack = 46; // Digital Input
 const int pinLedBack = 47;    // Digital Output
 const int pinButtonPause = 48;// Digital Input
@@ -199,6 +211,14 @@ boolean pressedButtonBack; // raw previous state of the Back button
 boolean heldButtonBack;    // debounced previous state of the Back button.
 unsigned long changedButtonBackMs; // time (milliseconds) of the last change to heldButtonBack
 
+boolean pressedButtonForward; // raw previous state of the Forward button
+boolean heldButtonForward;    // debounced previous state of the Forward button.
+unsigned long changedButtonForwardMs; // time (milliseconds) of the last change to heldButtonForward
+
+boolean pressedButtonShuffle; // raw previous state of the Shuffle button
+boolean heldButtonShuffle;    // debounced previous state of the Shuffle button.
+unsigned long changedButtonShuffleMs; // time (milliseconds) of the last change to heldButtonShuffle
+
 long microsPerTick = 1;   // current tempo, in microseconds per tick.
 
 /*
@@ -272,6 +292,14 @@ void setup() {
   digitalWrite(pinButtonBack, HIGH);   // enable internal pull-up resistor
   pinMode(pinLedBack, OUTPUT);
   
+  pinMode(pinButtonForward, INPUT);
+  digitalWrite(pinButtonForward, HIGH);  // enable internal pull-up resistor
+  pinMode(pinLedForward, OUTPUT);
+  
+  pinMode(pinButtonShuffle, INPUT);
+  digitalWrite(pinButtonShuffle, HIGH);  // enable internal pull-up resistor
+  pinMode(pinLedShuffle, OUTPUT);
+  
   // initialize our variables
   
   state = STATE_ERROR;
@@ -312,10 +340,14 @@ void loop() {
   boolean changeOnOff;  // If true, change the On/Off (Stopped) state.
   boolean changePlayPause; // If true, change the Play/Pause (Paused) state.
   boolean skipBack;     // If true, skip backward one track.
+  boolean skipForward;  // If true, skip forward one track.
+  boolean changeShuffle; // If true, change the Shuffle state.
   
   changeOnOff = false;
   changePlayPause = false;
   skipBack = false;
+  skipForward = false;
+  changeShuffle = false;
   
   /*
    * When the user presses the on/off button for enough time,
@@ -393,6 +425,58 @@ void loop() {
       skipBack = false;
       if (buttonPressed) {
         skipBack = true;
+      }
+    }
+  }
+  
+  /*
+   * When the user presses the forward button for enough time,
+   * skip forward one track.
+   */
+
+  buttonPressed = false;
+  if (digitalRead(pinButtonForward) == LOW) { // Internal pullup = button is "active low"
+    buttonPressed = true;
+  }
+  buttonPressed = !buttonPressed; // invert because the button is miswired to NC vs. NO
+
+  if (buttonPressed != pressedButtonForward) {
+    changedButtonForwardMs = millis();
+  }
+  pressedButtonForward = buttonPressed;
+
+  if ((millis() - changedButtonForwardMs) > MAX_BOUNCE_MS) {
+    if (buttonPressed != heldButtonForward) {
+      heldButtonForward = buttonPressed;
+      skipForward = false;
+      if (buttonPressed) {
+        skipForward = true;
+      }
+    }
+  }
+  
+  /*
+   * When the user presses the shuffle button for enough time,
+   * toggle the Shuffle Tracks state.
+   */
+
+  buttonPressed = false;
+  if (digitalRead(pinButtonShuffle) == LOW) { // Internal pullup = button is "active low"
+    buttonPressed = true;
+  }
+  buttonPressed = !buttonPressed; // invert because the button is miswired to NC vs. NO
+
+  if (buttonPressed != pressedButtonShuffle) {
+    changedButtonShuffleMs = millis();
+  }
+  pressedButtonShuffle = buttonPressed;
+
+  if ((millis() - changedButtonShuffleMs) > MAX_BOUNCE_MS) {
+    if (buttonPressed != heldButtonShuffle) {
+      heldButtonShuffle = buttonPressed;
+      changeShuffle = false;
+      if (buttonPressed) {
+        changeShuffle = true;
       }
     }
   }
@@ -823,18 +907,16 @@ void loop() {
    */
 
   digitalWrite(pinLedBack, heldButtonBack);
- 
   
-  uint8_t ledOnState; //XXX replace this eventually.
- 
- /* 
-  //XXX for now, just echo the Skip Back switch state to the LED.
-  if (digitalRead(pinButtonBack)) {
-    ledOnState = LOW;
-  } else {
-    ledOnState = HIGH;
-  }
- */
+  /*
+   * The Forward button's LED indicates
+   * that the Forward button is being held.
+   */
+  
+  digitalWrite(pinLedForward, heldButtonForward);
+  
+  //XXX for now, echo the shuffle button state to the LED.
+  digitalWrite(pinLedShuffle, heldButtonShuffle);
 }
 
 /*
