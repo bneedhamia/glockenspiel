@@ -41,8 +41,8 @@
  * 6) While playing or paused, press the Forward button to skip forward one track.
  * 7) While playing or paused, press the Shuffle button to shuffle the tracks.
  *    Press it again to play the tracks in order.
- *XXX currently, the skip and shuffle buttons have no effect.
- *XXX need to define when Shuffle affects the tracks.
+ *XXX currently, the skip buttons have no effect.
+ *XXX currently, shuffle has an effect only when the playlist runs out.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -84,6 +84,7 @@
  * pinLedForward = the Skip forward request state. Lighted when the button is pushed.
  * pinButtonShuffle = the Shuffle Tracks button. Internal pullup.
  * pinLedShuffle = the Shuffled Tracks state. Lighted when tracks are shuffled.
+ * pinRandom = an unconnected pin used to seed the random generator.
  *
  * Pins 50-53 are the SPI bus.
  */
@@ -110,6 +111,7 @@ const int pinButtonBack = 46; // Digital Input
 const int pinLedBack = 47;    // Digital Output
 const int pinButtonPause = 48;// Digital Input
 const int pinLedPlaying = 49; // Digital Output
+const int pinRandom = A0;     // Analog Input
 
 /*
  * time per solenoid actuation, in milliseconds.
@@ -199,6 +201,9 @@ char pausedState;        // State to restore after pausing
 unsigned long microsBehindNext; // while paused, difference between the start of the next queued event
                          // and what the current time was when pause began.
 
+boolean doShuffle;       // if true, shuffle the tracks (vs. play in order)
+boolean isShuffled;      // if true, the current playlist is shuffled.
+
 boolean pressedButtonOn; // raw previous state of the On/off button
 boolean heldButtonOn;    // debounced previous state of the On/off button.
 unsigned long changedButtonOnMs; // time (milliseconds) of the last change to heldButtonOn
@@ -268,7 +273,7 @@ char isPushedBack;
 void setup() {
   int i;
  
-  Serial.begin(115200);
+  Serial.begin(9600);
   Serial.println("Reset.");
 
   Ram_TableDisplay(); //Debug
@@ -301,6 +306,13 @@ void setup() {
   pinMode(pinLedShuffle, OUTPUT);
   
   // initialize our variables
+  // The random seed is a value read from an unconnected analog input.
+  
+  int seed;
+  seed = analogRead(pinRandom);
+  Serial.print("Random seed = ");
+  Serial.println(seed);
+  randomSeed(seed);
   
   state = STATE_ERROR;
 
@@ -478,6 +490,18 @@ void loop() {
       if (buttonPressed) {
         changeShuffle = true;
       }
+    }
+  }
+  
+  /*
+   * Since Shuffle affects the next track played,
+   * update the Shuffle state.
+   * Listen to the shuffle button only if we're On.
+   */
+  
+  if (state != STATE_ERROR && state != STATE_STOPPED) {
+    if (changeShuffle) {
+      doShuffle = !doShuffle;
     }
   }
 
@@ -915,8 +939,16 @@ void loop() {
   
   digitalWrite(pinLedForward, heldButtonForward);
   
-  //XXX for now, echo the shuffle button state to the LED.
-  digitalWrite(pinLedShuffle, heldButtonShuffle);
+  /*
+   * The Shuffle button's LED is lighted
+   * if we're On and the tracks are (to be) shuffled.
+   */
+  if (state == STATE_ERROR || state == STATE_STOPPED) {
+    digitalWrite(pinLedShuffle, LOW);
+  } else {
+    digitalWrite(pinLedShuffle, doShuffle);
+  }
+
 }
 
 /*
@@ -1086,16 +1118,43 @@ boolean transformSDPlaylist() {
 
 /*
  * Fills in playOrder[],
- * based on the 
+ * based on the Shuffle state.
  */
 void setPlayOrder() {
   uint8_t i;
+  uint8_t numLeft; // number of positions remaining to shuffle
+  uint8_t swap;    // temporary, for exchanging two values.
 
-  // We currently support only in-order play (no shuffle yet).
-  
+  isShuffled = false;
+
+  // Initialize the play order
   for (i = 0; i < numPlaylistTitles; ++i) {
     playOrder[i] = i;
   }
+  
+  if (!doShuffle) {
+    return; // play order = playlist order.
+  }
+  
+  // Shuffle the tracks via the Fisher–Yates shuffle algorithm
+  for (numLeft = numPlaylistTitles; numLeft > 1; --numLeft) {
+    i = (uint8_t) random(numLeft);
+    swap = playOrder[i];
+    playOrder[i] = playOrder[numLeft - 1];
+    playOrder[numLeft - 1] = swap;
+  }
+ 
+  /* 
+  Serial.print("Play Order =");
+  for (i = 0; i < numPlaylistTitles; ++i) {
+    Serial.print(" ");
+    Serial.print(playOrder[i]);
+  }
+  Serial.println();
+   */
+  
+  isShuffled = true;
+
 }
 
 /*
