@@ -1069,6 +1069,14 @@ boolean transformSDPlaylist() {
   char line[MAX_LINE_LENGTH + 1];
   char *cachedName;
   
+  // If our temporary file exists, delete it.
+  if (SD.exists((char *) SD_TMP_PLAYLIST)) {
+    if (!SD.remove((char *) SD_TMP_PLAYLIST)) {
+      Serial.println("Failed to remove tmp playlist");
+      
+      return false;
+    }
+  }
   
   fileIn = SD.open(playlistSDName, FILE_READ);
   if (!fileIn) {
@@ -1078,15 +1086,6 @@ boolean transformSDPlaylist() {
     return false;
   }
   
-  numPlaylistTitles = 0;
-  
-  if (SD.exists((char *) SD_TMP_PLAYLIST)) {
-    if (!SD.remove((char *) SD_TMP_PLAYLIST)) {
-      Serial.println("failed to remove tmp playlist");
-      fileIn.close();
-      return false;
-    }
-  }
   fileOut = SD.open(SD_TMP_PLAYLIST, FILE_WRITE);
   if (!fileOut) {
     Serial.print("Create failed: ");
@@ -1096,6 +1095,7 @@ boolean transformSDPlaylist() {
     return false;
   }
   
+  numPlaylistTitles = 0;
   cachedName = 0;
   while (readNextLine(&fileIn, line, MAX_LINE_LENGTH + 1)) {
     if (line[0] == '\0' || line[0] == '#') {
@@ -1117,6 +1117,11 @@ boolean transformSDPlaylist() {
     if (fileOut.println(cachedName) < strlen(cachedName)) {
       // write error.
       Serial.println("write error");
+      
+      if (cachedName != 0) {
+        free(cachedName);
+        cachedName = 0;
+      }
       fileIn.close();
       fileOut.close();
       return false;
