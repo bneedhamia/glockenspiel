@@ -37,11 +37,11 @@
  *    At any time, press the On/Off button again to stop playing.
  * 4) While playing, press the Play/Pause button to pause playing.
  *    At any time, press the Play/Pause button again to resume playing.
- * 5) While playing or paused, press the Back button to skip backward one track.
- * 6) While playing or paused, press the Forward button to skip forward one track.
+ * 5) While playing, press the Back button to skip backward one track.
+ * 6) While playing, press the Forward button to skip forward one track.
  * 7) While playing or paused, press the Shuffle button to shuffle the tracks.
  *    Press it again to play the tracks in order.
- *XXX currently, the skip buttons have no effect.
+ *XXX currently, the skip back button has no effect.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -653,6 +653,15 @@ void loop() {
       doPause();
       break;
     }
+    
+    // Handle the Skip Forward button
+    if (skipForward) {
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
+      break;
+    }
 
     chunkType = midiFile.openChunk();
     if (chunkType != CT_MTRK) {
@@ -691,6 +700,15 @@ void loop() {
     // Handle the pause button
     if (changePlayPause) {
       doPause();
+      break;
+    }
+    
+    // Handle the Skip Forward button
+    if (skipForward) {
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
       break;
     }
 
@@ -837,6 +855,15 @@ void loop() {
     // Handle the pause button
     if (changePlayPause) {
       doPause();
+      break;
+    }
+    
+    // Handle the Skip Forward button
+    if (skipForward) {
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
       break;
     }
     
