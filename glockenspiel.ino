@@ -42,7 +42,6 @@
  * 7) While playing or paused, press the Shuffle button to shuffle the tracks.
  *    Press it again to play the tracks in order.
  *XXX currently, the skip buttons have no effect.
- *XXX currently, shuffle has an effect only when the playlist runs out.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -191,7 +190,7 @@ uint8_t numPlaylistTitles; // number of titles in the temporary playlist.
 uint8_t *playOrder;      // (malloc()ed) array of track numbers, size numPlaylistTitles.
                          //   (line numbers in the tmp playlist) to play,
                          //   in order of play.  E.g., if not shuffled, [0] = 0, [1] = 1, etc.
-uint8_t nowPlayingIdx;   // if not 255, index into playOrder[] of the title we're currently playing
+uint8_t nowPlayingIdx;   // index into playOrder[] of the title we're currently playing
 char *playingFname;      // SD filename of the file being played.
 MidiFileStream midiFile; // The current, open Midi file being played.
 File playingFile;        // the underlying SD File of that Midi file.
@@ -551,7 +550,9 @@ void loop() {
     }
     
     setPlayOrder();
-    nowPlayingIdx = 255;
+    
+    // Pretend we've just finished playing the last of the playlist.
+    nowPlayingIdx = numPlaylistTitles - 1;
     
     Ram_TableDisplay(); // Debug: to see on/off memory leaks.    
     state = STATE_END_FILE;
@@ -568,7 +569,7 @@ void loop() {
     }
     
     if (!changePlayPause) {
-      break; // nothing to do.
+      break; // nothing to do. Ignore the skip buttons.
     }
     
     /*
@@ -1255,16 +1256,13 @@ boolean getNextFilename() {
   uint8_t curLineNum;
   char line[MAX_LINE_LENGTH + 1];
   
-  if (nowPlayingIdx == 255) {
+  ++nowPlayingIdx;
+  
+  // Reorder the tracks if we've run out or if we need to shuffle or unshuffle
+  if (nowPlayingIdx >= numPlaylistTitles || doShuffle != isShuffled) {
+    // loop, reshuffle if necessary.
+    setPlayOrder();
     nowPlayingIdx = 0;
-  } else {
-    ++nowPlayingIdx;
-    
-    if (nowPlayingIdx >= numPlaylistTitles) {
-      // loop, reshuffle if necessary.
-      setPlayOrder();
-      nowPlayingIdx = 0;
-    }
   }
   
   chosenLineNum = playOrder[nowPlayingIdx];
