@@ -41,7 +41,6 @@
  * 6) While playing, press the Forward button to skip forward one track.
  * 7) While playing or paused, press the Shuffle button to shuffle the tracks.
  *    Press it again to play the tracks in order.
- *XXX currently, the skip back button has no effect.
  *
  * NOTE: The solenoid can dissipate no more than 1.2 watts continuously.
  * At 4.5ohm solenoid resistance, and 9V solenoid supply (5V is too weak),
@@ -113,6 +112,13 @@ const int pinLedPlaying = 49; // Digital Output
 const int pinRandom = A0;     // Analog Input
 
 /*
+ * I've miswired the Skip Forward and Shuffle buttons to be inverted.
+ * If you've wired the Skip Forward and Shuffle buttons correctly,
+ * comment out this #define
+ */
+#define MISWIRED_BUTTONS 1 // define if you've miswired the Forward and Shuffle buttons, inverting them.
+
+/*
  * time per solenoid actuation, in milliseconds.
  * Too large a number here can burn out the solenoids.
  * Too small a number here will cause some solenoids to not strike.
@@ -124,6 +130,13 @@ const int MS_PER_STRIKE = 3;
  * to be considered real. Used for debounce.
  */
 const int MAX_BOUNCE_MS = 50;
+
+/*
+ * time (microseconds) from the start of playing a file
+ * that is considered "near" the start of the file.
+ * Used by the Skip Backward button processing.
+ */
+const unsigned long NEAR_START_MICROS = (unsigned long) (1000L * 1000L * 5L);
 
 /*
  * maximum line length in any file we deal with.
@@ -175,6 +188,17 @@ const char STATE_END_TRACK = (char) 4;
 const char STATE_EVENTS = (char) 5;
 const char STATE_WAITING = (char) 6;
 
+/*
+ * Types of skipping backward. See skipBackType.
+ *
+ * SBT_NONE = don't skip backward on end of file.
+ * SBT_RESTART = skip back to the start of the current file.
+ * SBT_BACK_ONE = skip backward one track.
+ */
+const char SBT_NONE = (char) 0;
+const char SBT_RESTART = (char) 1;
+const char SBT_BACK_ONE = (char) 2;
+
 void doPause();
 boolean readConfiguration();
 boolean transformSDPlaylist();
@@ -199,6 +223,7 @@ char state;              // State of our file-playing machine. See STATE_*.
 char pausedState;        // State to restore after pausing
 unsigned long microsBehindNext; // while paused, difference between the start of the next queued event
                          // and what the current time was when pause began.
+char skipBackType;       // Type of skipping back to perform. See SBT_*.
 
 boolean doShuffle;       // if true, shuffle the tracks (vs. play in order)
 boolean isShuffled;      // if true, the current playlist is shuffled.
@@ -314,6 +339,7 @@ void setup() {
   randomSeed(seed);
   
   state = STATE_ERROR;
+  skipBackType = SBT_NONE;
 
   if (!SD.begin(pinSelectSD)) {
     Serial.println("SD.begin() failed. Check card insertion.");
@@ -449,7 +475,9 @@ void loop() {
   if (digitalRead(pinButtonForward) == LOW) { // Internal pullup = button is "active low"
     buttonPressed = true;
   }
+#ifdef MISWIRED_BUTTONS
   buttonPressed = !buttonPressed; // invert because the button is miswired to NC vs. NO
+#endif
 
   if (buttonPressed != pressedButtonForward) {
     changedButtonForwardMs = millis();
@@ -475,7 +503,9 @@ void loop() {
   if (digitalRead(pinButtonShuffle) == LOW) { // Internal pullup = button is "active low"
     buttonPressed = true;
   }
+#ifdef MISWIRED_BUTTONS
   buttonPressed = !buttonPressed; // invert because the button is miswired to NC vs. NO
+#endif
 
   if (buttonPressed != pressedButtonShuffle) {
     changedButtonShuffleMs = millis();
@@ -662,6 +692,17 @@ void loop() {
       state = STATE_END_FILE;
       break;
     }
+    
+    // Handle the Skip Backward button
+    if (skipBack) {
+      setupSkipBack();
+      
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
+      break;
+    }
 
     chunkType = midiFile.openChunk();
     if (chunkType != CT_MTRK) {
@@ -705,6 +746,17 @@ void loop() {
     
     // Handle the Skip Forward button
     if (skipForward) {
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
+      break;
+    }
+
+    // Handle the Skip Backward button
+    if (skipBack) {
+      setupSkipBack();
+      
       midiFile.end();
       playingFile.close();
       
@@ -867,6 +919,17 @@ void loop() {
       break;
     }
     
+    // Handle the Skip Backward button
+    if (skipBack) {
+      setupSkipBack();
+      
+      midiFile.end();
+      playingFile.close();
+      
+      state = STATE_END_FILE;
+      break;
+    }
+    
     /*
      * If we need to wait a long time to play the notes,
      * wait for another call to loop().
@@ -958,14 +1021,22 @@ void loop() {
    * that the Back button is being held.
    */
 
-  digitalWrite(pinLedBack, heldButtonBack);
+  if (state == STATE_ERROR || state == STATE_STOPPED || state == STATE_PAUSED) {
+    digitalWrite(pinLedBack, LOW);
+  } else {
+    digitalWrite(pinLedBack, heldButtonBack);
+  }
   
   /*
    * The Forward button's LED indicates
    * that the Forward button is being held.
    */
   
-  digitalWrite(pinLedForward, heldButtonForward);
+  if (state == STATE_ERROR || state == STATE_STOPPED || state == STATE_PAUSED) {
+    digitalWrite(pinLedForward, LOW);
+  } else {
+    digitalWrite(pinLedForward, heldButtonForward);
+  }
   
   /*
    * The Shuffle button's LED is lighted
@@ -995,6 +1066,21 @@ void doPause() {
 
   
   state = STATE_PAUSED;
+}
+
+/*
+ * Called while playing a file,
+ * sets up getNextFilename() to skip backward.
+ *
+ * If we're near the start of a file, skip backward a track.
+ * Otherwise, restart the current file.
+ */
+void setupSkipBack() {
+  if (micros() - startMicros <= NEAR_START_MICROS) {
+    skipBackType = SBT_BACK_ONE;
+  } else {
+    skipBackType = SBT_RESTART;
+  }
 }
 
 /*
@@ -1288,16 +1374,43 @@ boolean getNextFilename() {
   uint8_t curLineNum;
   char line[MAX_LINE_LENGTH + 1];
   
-  ++nowPlayingIdx;
-  
-  // Reorder the tracks if we've run out or if we need to shuffle or unshuffle
-  if (nowPlayingIdx >= numPlaylistTitles || doShuffle != isShuffled) {
-    // loop, reshuffle if necessary.
-    setPlayOrder();
-    nowPlayingIdx = 0;
+  /*
+   * If we're to skip backward in some way,
+   * do that instead of going to the next track.
+   */
+  switch (skipBackType) {
+  default:
+    Serial.print("unknown skipBackType: ");
+    Serial.println(skipBackType);
+    skipBackType = SBT_NONE;
+ 
+  case SBT_NONE: //FALLTHROUGH
+    ++nowPlayingIdx;
+    
+    // Reorder the tracks if we've run out or if we need to shuffle or unshuffle
+    if (nowPlayingIdx >= numPlaylistTitles || doShuffle != isShuffled) {
+      // loop, reshuffle if necessary.
+      setPlayOrder();
+      nowPlayingIdx = 0;
+    }
+    
+    chosenLineNum = playOrder[nowPlayingIdx];
+    break;
+    
+  case SBT_RESTART:  // Reopen the current file.
+    chosenLineNum = playOrder[nowPlayingIdx];
+    break;
+    
+  case SBT_BACK_ONE:  // Back up one file. Don't reorder the tracks.
+    if (nowPlayingIdx == 0) {
+      nowPlayingIdx = numPlaylistTitles - 1;
+    } else {
+      --nowPlayingIdx;
+    }
+    chosenLineNum = playOrder[nowPlayingIdx];
+    break;
   }
-  
-  chosenLineNum = playOrder[nowPlayingIdx];
+  skipBackType = SBT_NONE;
   
   file = SD.open(SD_TMP_PLAYLIST, FILE_READ);
   if (!file) {
