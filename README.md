@@ -15,6 +15,7 @@ This is a work in progress. Project status is updated in the blog at [https://ne
 * **glockenspiel.fzz** is a Fritzing diagram of the circuit
 * **BillOfMaterials.ods** is a parts list for the project
 * **MechanicalNotes.odp** contains notes about the mechanical design
+* **buttonIcons.odg** is a drawing of the button icons I'd like to use.
 
 ## Libraries used
 
