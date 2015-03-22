@@ -2,16 +2,17 @@
 
 ## Introduction
 
-glockenspiel is an Arduino sketch that plays MIDI files from an SD card on a set of chimes. The circuit consists of an Arduino Mega 2560 Rev 3, a Sparkfun TransmogriShield, a Sparkfun CC3000 wifi/SD shield, 19 solenoids and drivers, and 19 chimes made from electrical conduit.
+glockenspiel is an Arduino sketch that plays MIDI files from an SD card on a set of chimes. The circuit consists of an Arduino Mega 2560 Rev 3, a Sparkfun TransmogriShield, a Sparkfun CC3000 wifi/SD shield, 19 solenoids and drivers, 19 chimes made from electrical conduit, and 5 lighted buttons.
 
-I plan to add buttons to control the playback of the MIDI files.  For now, the sketch plays all files in the playlist, in order, then repeats continuously.
+The five buttons control the glockenspiel: stop/start, play/pause, skip backward, skip forward, and shuffle.
+
 
 This is a work in progress. Project status is updated in the blog at [https://needhamia.com/](https://needhamia.com/)
 
 ## Files
 
 * **glockenspiel.ino** is the Arduino sketch
-* **SD** is a set of files to copy to the SD card. The files include a configuration file, a playlist, and a set of MIDI files to play.
+* **SD** is a set of files to copy to the SD card. The files include a sample configuration file, a sample playlist, and a set of MIDI files to play.
 * **glockenspiel.fzz** is a Fritzing diagram of the circuit
 * **BillOfMaterials.ods** is a parts list for the project
 * **MechanicalNotes.odp** contains notes about the mechanical design
